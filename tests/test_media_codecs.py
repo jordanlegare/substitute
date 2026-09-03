@@ -26,6 +26,7 @@ from ald_media_controller import (
     parse_audio_record,
     read_checksum_wav,
     render_instruction_frame,
+    stage_packet_media,
     validate_recipe,
     write_checksum_wav,
 )
@@ -187,7 +188,6 @@ def test_frame_with_wrong_dimensions_is_rejected(compiled_recipe, tmp_path):
 def test_audio_record_layout_and_crc():
     digest = bytes(range(32))
     record = build_audio_record(0x01020304, digest)
-
     assert len(record) == 49
     assert record[:8] == AUDIO_PREAMBLE == b"\xAA" * 8
     assert record[8] == 1
@@ -223,17 +223,14 @@ def test_manchester_rejects_invalid_pair():
 def test_bfsk_wav_round_trip(tmp_path):
     digest = hashlib.sha256(b"packet").digest()
     path = write_checksum_wav(7, digest, DEFAULT_MEDIA_PROFILE, tmp_path / "checksum.wav")
-
     samples = read_checksum_wav(path, DEFAULT_MEDIA_PROFILE)
     decoded = decode_checksum_audio(samples, DEFAULT_MEDIA_PROFILE)
-
     assert len(samples) == 144000
     assert decoded == AudioRecord(1, 7, digest)
 
 
 def test_bfsk_waveform_is_three_seconds_and_bounded():
     samples = encode_checksum_audio(7, b"d" * 32, DEFAULT_MEDIA_PROFILE)
-
     assert samples.dtype == np.float64
     assert samples.shape == (144000,)
     assert np.max(np.abs(samples)) <= 0.7000001
@@ -243,9 +240,30 @@ def test_bfsk_waveform_is_three_seconds_and_bounded():
 def test_one_corrupt_copy_still_decodes_but_two_do_not():
     samples = encode_checksum_audio(7, b"d" * 32, DEFAULT_MEDIA_PROFILE)
     one_bad = _corrupt_audio_copy(samples, copy_index=0)
-
     assert decode_checksum_audio(one_bad, DEFAULT_MEDIA_PROFILE).sequence == 7
-
     two_bad = _corrupt_audio_copy(one_bad, copy_index=1)
     with pytest.raises(AudioDecodeError, match="two matching"):
         decode_checksum_audio(two_bad, DEFAULT_MEDIA_PROFILE)
+
+
+def test_staged_artifacts_round_trip_all_packets(compiled_recipe, tmp_path):
+    directory = tmp_path / "packet-media"
+    artifacts = stage_packet_media(compiled_recipe, directory, DEFAULT_MEDIA_PROFILE)
+
+    assert len(artifacts) == len(compiled_recipe.packets)
+    assert len(list(directory.iterdir())) == 2 * len(compiled_recipe.packets)
+
+    for expected, artifact in zip(compiled_recipe.packets, artifacts, strict=True):
+        assert artifact.sequence == expected.packet.sequence
+        assert artifact.digest == expected.digest
+        assert artifact.frame_path.name == f"packet-{expected.packet.sequence:06d}.png"
+        assert artifact.audio_path.name == f"packet-{expected.packet.sequence:06d}.wav"
+
+        frame = decode_instruction_frame(artifact.frame_path, DEFAULT_MEDIA_PROFILE)
+        audio = decode_checksum_audio(read_checksum_wav(artifact.audio_path, DEFAULT_MEDIA_PROFILE), DEFAULT_MEDIA_PROFILE)
+        assert (frame.sequence, frame.digest, frame.canonical_bytes) == (
+            expected.packet.sequence,
+            expected.digest,
+            expected.canonical_bytes,
+        )
+        assert (audio.sequence, audio.digest) == (expected.packet.sequence, expected.digest)
