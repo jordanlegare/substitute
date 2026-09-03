@@ -29,6 +29,7 @@ jobs:
           ald_hardened_core.py
           ald_media_codecs.py
           ald_media_staging.py
+          ald_compression.py
           ald_media_controller.py
           ald_media_cli.py
           ald_hls_integration.py
