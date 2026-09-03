@@ -254,6 +254,32 @@ def test_parse_local_playlist_accepts_normalized_bundle_playlist(tmp_path):
     assert playlist.segments[0].duration == pytest.approx(3.0)
 
 
+def test_parse_local_playlist_accepts_optional_metadata_tags_absent(tmp_path):
+    directory = tmp_path / "minimal"
+    directory.mkdir()
+    (directory / "init.mp4").write_bytes(b"init")
+    (directory / "packet-000000.m4s").write_bytes(b"segment")
+    manifest = directory / "stream.m3u8"
+    manifest.write_text(
+        "\n".join(
+            [
+                "#EXTM3U",
+                '#EXT-X-MAP:URI="init.mp4"',
+                "#EXTINF:3.000000,",
+                "packet-000000.m4s",
+                "#EXT-X-ENDLIST",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    playlist = parse_local_playlist(manifest)
+
+    assert playlist.initialization_path == (directory / "init.mp4").resolve()
+    assert [segment.uri for segment in playlist.segments] == ["packet-000000.m4s"]
+
+
 @pytest.mark.parametrize(
     "uri",
     [
