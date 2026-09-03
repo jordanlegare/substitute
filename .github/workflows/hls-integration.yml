@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - fix/core-hardening-recovery
+      - main
   workflow_dispatch:
 
 jobs:
