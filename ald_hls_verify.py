@@ -297,7 +297,7 @@ def _validate_segment_file_set(playlist: LocalPlaylist) -> None:
     try:
         actual = {
             path.relative_to(root).as_posix()
-            for path in root.rglob("packet-*.m4s")
+            for path in root.rglob("*.m4s")
         }
     except (OSError, ValueError) as error:
         raise IntegrityError(f"unable to enumerate bundle media segments: {error}") from error
