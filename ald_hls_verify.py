@@ -342,6 +342,7 @@ def _extract_encoded_records(
                     ],
                     timeout_seconds=_VERIFY_TIMEOUT_SECONDS,
                 )
+                total_samples = int(round(loaded.profile.sample_rate * loaded.profile.interval_seconds))
                 run_media_tool(
                     [
                         str(capabilities.ffmpeg),
@@ -355,7 +356,7 @@ def _extract_encoded_records(
                         "-map",
                         "0:a:0",
                         "-af",
-                        f"asetpts=PTS-STARTPTS,apad=pad_dur={loaded.profile.interval_seconds:.6f},atrim=duration={loaded.profile.interval_seconds:.6f}",
+                        f"apad=whole_len={total_samples},atrim=end_sample={total_samples},asetpts=N/SR/TB",
                         "-ar",
                         str(loaded.profile.sample_rate),
                         "-ac",
