@@ -26,6 +26,7 @@ _BUNDLE_KEYS = frozenset(
         "ffmpeg",
         "manifest",
         "initialization",
+        "recipe",
         "packets",
         "root_hash",
         "signature",
