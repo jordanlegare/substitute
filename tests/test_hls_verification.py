@@ -10,10 +10,12 @@ from ald_media_controller import (
     CompiledRecipe,
     DependencyError,
     IntegrityError,
+    OutputError,
     PacketMediaArtifact,
     SignatureStatus,
     compile_recipe,
     load_recipe,
+    measure_hls_bundle_bytes,
     mux_packet_mp4,
     package_hls,
     parse_local_playlist,
@@ -252,3 +254,26 @@ def test_segment_timeline_drift_fails_closed(encoded_bundle, monkeypatch):
 
     with pytest.raises(IntegrityError, match="timestamp|timeline"):
         verify_media_bundle(manifest)
+
+
+@pytest.mark.requires_ffmpeg
+def test_hls_bundle_byte_measurement_counts_regular_files(encoded_bundle, tmp_path):
+    manifest = _copy_bundle(encoded_bundle, tmp_path / "measured")
+    expected = sum(
+        path.stat().st_size
+        for path in manifest.parent.iterdir()
+        if path.is_file() and not path.is_symlink()
+    )
+
+    assert measure_hls_bundle_bytes(manifest.parent) == expected
+
+
+@pytest.mark.requires_ffmpeg
+def test_hls_bundle_byte_measurement_rejects_symlinks(encoded_bundle, tmp_path):
+    manifest = _copy_bundle(encoded_bundle, tmp_path / "linked")
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"outside")
+    (manifest.parent / "outside-link.bin").symlink_to(outside)
+
+    with pytest.raises(OutputError, match="symlink"):
+        measure_hls_bundle_bytes(manifest.parent)
