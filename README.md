@@ -51,8 +51,10 @@ A published bundle contains:
 - `stream.m3u8` — normalized local HLS media playlist;
 - `init.mp4` — shared fMP4 initialization segment;
 - `packet-000000.m4s`, ... — one media segment per compact instruction packet;
-- `bundle.json` — canonical ordered packet/index/root/profile metadata and optional signature;
-- `recipe.canonical.json` — canonical recipe used to rebind verified media to the simulator.
+- `bundle.json` — canonical ordered packet/index/root/profile metadata, the canonical-recipe SHA-256 binding, and optional signature;
+- `recipe.canonical.json` — exact canonical recipe bytes containing the simulation configuration used to rebind verified media to the simulator.
+
+`bundle.json` records both the fixed path `recipe.canonical.json` and SHA-256 of its exact bytes. Verification rejects a missing, symlinked, renamed, or digest-mismatched recipe artifact. The verified recipe bytes are retained in memory and `simulate-media` parses those verified bytes from a private scratch file rather than reopening the mutable bundle recipe after verification.
 
 Bundle publication is transactional. Existing output is preserved unless `--overwrite` is supplied, and a replacement is not published until the new encoded bundle has verified.
 
@@ -67,16 +69,19 @@ The verifier rejects a bundle before exposing executable packets when any requir
 - segment audio/video timeline drift relative to the cumulative verified playlist timeline;
 - frame/audio/index sequence disagreement;
 - frame/audio/index digest disagreement;
+- missing or modified canonical recipe bytes relative to the recipe SHA-256 declared by `bundle.json`;
 - malformed canonical packet bytes;
 - recomputed ALD1 hash-chain or terminal-root mismatch.
 
 FFmpeg is invoked only through a bounded local subprocess boundary with argument vectors, `shell=False`, no stdin, and timeouts. The verifier parses and resolves local bundle paths itself rather than handing an untrusted HLS manifest to FFmpeg.
 
-## Optional Ed25519 bundle identity
+## Integrity versus optional Ed25519 bundle identity
 
-Checksum/hash-chain integrity and bundle identity are separate concerns.
+Checksum/hash consistency and publisher identity are separate concerns.
 
-Unsigned bundles are permitted by default. When `bundle.json` is signed, verification requires a caller-supplied trusted Ed25519 public key and verifies both the key fingerprint and signature over the canonical unsigned index bytes. `--require-signature` rejects unsigned bundles.
+Unsigned bundles are permitted by default. Their packet hash chain, redundant media records, bundle index, and canonical-recipe SHA-256 provide fail-closed **consistency and corruption detection**, but an unsigned bundle does not authenticate who created it; a party able to replace a whole unsigned bundle can construct new internally consistent hashes as well.
+
+When `bundle.json` is signed, the Ed25519 signature covers the canonical unsigned index bytes. Because the index contains the packet/root metadata **and the SHA-256 of `recipe.canonical.json`**, a valid signature from a caller-trusted public key authenticates the exact recipe/configuration binding as well as the declared media metadata. `--require-signature` rejects unsigned bundles.
 
 Install the optional signature dependency with the `signature` extra. Private keys are inputs to explicit signing operations; they are not embedded in bundles.
 
@@ -130,6 +135,8 @@ These numbers answer different questions. The compact procedural instruction rep
 
 For the checked-in demonstration recipe, one compact `ALD_CYCLE` packet represents 100 simulated cycles over an aggregate surface of 1,000,000 sites. The analytical potential half-reaction/site-event count is therefore 200,000,000 without materializing 200 million records.
 
+A verified Ubuntu/FFmpeg acceptance run for this recipe measured 1,140 canonical instruction bytes versus 27,076 bytes for the analytical per-cycle instruction expansion, a 23.75x procedural instruction ratio. The analytical site-event JSONL estimate was 16.6 GB. The generated HLS/fMP4 bundle was 512,981 bytes in that run; physical media size is informational and can vary with encoder/tool versions.
+
 ## Tests and acceptance
 
 Run the complete suite with:
@@ -139,6 +146,8 @@ python -m pytest -q
 ```
 
 The HLS integration GitHub Actions workflow additionally installs FFmpeg and the signature extra, compiles all project modules, builds and verifies a real encoded bundle, runs direct and media simulations with seed 42, compares deterministic reports, and prints procedural-compaction and physical-bundle-size metrics.
+
+The current acceptance suite includes explicit rejection of a canonical recipe whose simulation-affecting surface configuration is changed after bundle creation.
 
 ## Project documents
 
