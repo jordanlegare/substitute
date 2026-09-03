@@ -21,6 +21,8 @@ for _name in (
     "QR_MAGIC",
     "encode_qr_payload",
     "decode_qr_payload",
+    "render_instruction_frame",
+    "decode_instruction_frame",
 ):
     setattr(_core, _name, getattr(_media, _name))
 
