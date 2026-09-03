@@ -168,7 +168,6 @@ def parse_local_playlist(path: Path) -> LocalPlaylist:
         "#EXT-X-INDEPENDENT-SEGMENTS": "independent segments",
         "#EXT-X-MAP:": "initialization map",
     }
-    required_labels = set(singleton_prefixes.values())
     seen: set[str] = set()
     initialization_path: Path | None = None
     pending_duration: float | None = None
@@ -253,11 +252,6 @@ def parse_local_playlist(path: Path) -> LocalPlaylist:
 
     if pending_duration is not None:
         raise MediaVerificationError("playlist ends before segment URI")
-    missing_required = sorted(required_labels - seen)
-    if missing_required:
-        raise MediaVerificationError(
-            f"playlist is missing required tags: {', '.join(missing_required)}"
-        )
     if initialization_path is None:
         raise MediaVerificationError("playlist initialization map is missing")
     if not segments:
