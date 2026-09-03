@@ -1,0 +1,57 @@
+{
+  "protocol": "ALD-MEDIA/1",
+  "recipe_id": "generic-al2o3-001",
+  "metadata": {
+    "material": "Al2O3",
+    "simulation_notice": "Precursor names are simulation labels, not operational handling instructions."
+  },
+  "precursors": {
+    "A": {"label": "trimethylaluminum"},
+    "B": {"label": "water"}
+  },
+  "initial_conditions": {
+    "temperature_c": 25.0,
+    "pressure_pa": 101325.0
+  },
+  "limits": {
+    "min_purge_ms": 1000,
+    "max_temperature_c": 300.0,
+    "max_pressure_pa": 200000.0,
+    "max_cycles": 1000,
+    "max_runtime_ms": 3600000,
+    "max_residual_fraction": 0.01,
+    "max_packet_bytes": 800
+  },
+  "surface": {
+    "model_version": "site-binomial/1",
+    "regions": 4,
+    "sites_per_region": 250000,
+    "transport_factors": [0.95, 1.0, 1.0, 0.95],
+    "blocked_fraction": 0.01,
+    "defect_fraction": 0.005,
+    "k_a": 1.5,
+    "k_b": 1.4,
+    "growth_nm_per_reaction_fraction": 0.11,
+    "purge_half_life_ms": 800,
+    "max_event_samples": 100
+  },
+  "instructions": [
+    {"opcode": "CONFIGURE", "arguments": {}},
+    {"opcode": "SET_TEMPERATURE", "arguments": {"target_c": 200.0, "ramp_c_per_min": 20.0, "tolerance_c": 1.0}},
+    {"opcode": "EVACUATE", "arguments": {"target_pa": 100.0, "timeout_ms": 900000}},
+    {"opcode": "STABILIZE", "arguments": {"duration_ms": 60000}},
+    {"opcode": "ALD_CYCLE", "arguments": {
+      "precursor_a": "A",
+      "pulse_a_ms": 100,
+      "flow_a_sccm": 50.0,
+      "purge_a_ms": 5000,
+      "precursor_b": "B",
+      "pulse_b_ms": 100,
+      "flow_b_sccm": 50.0,
+      "purge_b_ms": 5000,
+      "repeat": 100
+    }},
+    {"opcode": "MEASURE", "arguments": {"measurements": ["thickness_nm", "coverage", "defect_fraction"]}},
+    {"opcode": "SHUTDOWN", "arguments": {"heater_ramp_c_per_min": 20.0, "vent_target_pa": 101325.0}}
+  ]
+}
