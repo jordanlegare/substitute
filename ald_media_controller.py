@@ -89,7 +89,11 @@ for _name in (
 ):
     setattr(_core, _name, getattr(_verify, _name))
 
-for _name in ("CompressionReport", "measure_procedural_compression"):
+for _name in (
+    "CompressionReport",
+    "measure_procedural_compression",
+    "measure_hls_bundle_bytes",
+):
     setattr(_core, _name, getattr(_compression, _name))
 
 _core.build_parser = _cli.build_parser
