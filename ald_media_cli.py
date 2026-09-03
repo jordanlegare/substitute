@@ -476,4 +476,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as error:
         if log_level == "DEBUG":
             traceback.print_exc()
-        return _emit_cli_error(error, core.ExitCode.DEPENDENCY)
+        fallback = {
+            "validate": core.ExitCode.RECIPE,
+            "simulate": core.ExitCode.CONTROLLER,
+            "compile": core.ExitCode.MEDIA,
+            "verify": core.ExitCode.INTEGRITY,
+            "simulate-media": core.ExitCode.CONTROLLER,
+        }.get(arguments.command, core.ExitCode.USAGE)
+        return _emit_cli_error(error, fallback)
