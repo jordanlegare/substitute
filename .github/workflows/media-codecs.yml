@@ -19,4 +19,10 @@ jobs:
       - name: Tests
         run: python -m pytest -q
       - name: Compile
-        run: python -m py_compile ald_media_controller.py ald_core.py
+        run: >-
+          python -m py_compile
+          ald_core.py
+          ald_hardened_core.py
+          ald_media_codecs.py
+          ald_media_staging.py
+          ald_media_controller.py
