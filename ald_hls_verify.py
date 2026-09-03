@@ -11,6 +11,7 @@ has succeeded.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import hmac
 import json
 import math
@@ -34,6 +35,7 @@ from ald_hls_signature import SignatureError, SignatureStatus, verify_bundle_sig
 
 _VERIFY_TIMEOUT_SECONDS = 60.0
 _TIMELINE_TOLERANCE_SECONDS = 0.05
+_RECIPE_FILENAME = "recipe.canonical.json"
 _BUNDLE_KEYS = frozenset(
     {
         "protocol",
@@ -41,6 +43,7 @@ _BUNDLE_KEYS = frozenset(
         "ffmpeg",
         "manifest",
         "initialization",
+        "recipe",
         "packets",
         "root_hash",
         "signature",
@@ -65,6 +68,7 @@ _PROFILE_KEYS = frozenset(
 )
 _PACKET_KEYS = frozenset({"sequence", "segment", "digest", "duration_seconds"})
 _FFMPEG_KEYS = frozenset({"version", "video_encoder", "audio_encoder"})
+_RECIPE_KEYS = frozenset({"path", "sha256"})
 
 
 class IntegrityError(core.ALDError):
@@ -79,6 +83,7 @@ class VerifiedMediaRecipe:
     root_hash: bytes
     profile: media.MediaProfile
     signature_status: SignatureStatus
+    recipe_bytes: bytes
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,7 @@ class _LoadedIndex:
     root_hash: bytes
     profile: media.MediaProfile
     signature_status: SignatureStatus
+    recipe_bytes: bytes
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -136,6 +142,25 @@ def _decode_digest(value: Any, label: str) -> bytes:
     if len(digest) != 32:
         raise IntegrityError(f"{label} must decode to 32 bytes")
     return digest
+
+
+def _load_bound_recipe(root: dict[str, Any], bundle_root: Path) -> bytes:
+    recipe = _require_exact_dict(root["recipe"], _RECIPE_KEYS, "bundle recipe")
+    recipe_name = _require_plain_string(recipe["path"], "bundle recipe path")
+    if recipe_name != _RECIPE_FILENAME:
+        raise IntegrityError(f"bundle recipe path must be {_RECIPE_FILENAME}")
+    recipe_path = bundle_root / recipe_name
+    if recipe_path.is_symlink() or not recipe_path.is_file():
+        raise IntegrityError("bound canonical recipe is missing or not a real regular file")
+    try:
+        recipe_bytes = recipe_path.read_bytes()
+    except OSError as error:
+        raise IntegrityError(f"unable to read bound canonical recipe: {error}") from error
+    expected = _decode_digest(recipe["sha256"], "bundle recipe SHA-256")
+    actual = hashlib.sha256(recipe_bytes).digest()
+    if not hmac.compare_digest(actual, expected):
+        raise IntegrityError("canonical recipe SHA-256 does not match bundle index")
+    return recipe_bytes
 
 
 def _load_bundle_index(
@@ -188,6 +213,8 @@ def _load_bundle_index(
     initialization = _require_plain_string(root["initialization"], "bundle initialization")
     if initialization != expected_init:
         raise IntegrityError("bundle initialization does not match verified playlist")
+
+    recipe_bytes = _load_bound_recipe(root, playlist.path.parent)
 
     profile_raw = _require_exact_dict(root["media_profile"], _PROFILE_KEYS, "media profile")
     try:
@@ -260,6 +287,7 @@ def _load_bundle_index(
         root_hash=_decode_digest(root["root_hash"], "bundle root hash"),
         profile=profile,
         signature_status=signature_status,
+        recipe_bytes=recipe_bytes,
     )
 
 
@@ -452,7 +480,7 @@ def verify_media_bundle(
     require_signature: bool = False,
     trusted_public_key: Path | None = None,
 ) -> VerifiedMediaRecipe:
-    """Recover and verify a complete local media bundle before exposing packets."""
+    """Recover and verify a complete local media bundle before exposing packets or recipe bytes."""
     if type(require_signature) is not bool:
         raise IntegrityError("require_signature must be a boolean")
     if trusted_public_key is not None and not isinstance(trusted_public_key, Path):
@@ -508,4 +536,5 @@ def verify_media_bundle(
         root_hash=loaded.root_hash,
         profile=loaded.profile,
         signature_status=loaded.signature_status,
+        recipe_bytes=loaded.recipe_bytes,
     )
