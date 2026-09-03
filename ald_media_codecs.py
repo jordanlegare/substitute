@@ -16,8 +16,10 @@ from pathlib import Path
 import struct
 import textwrap
 from typing import Any
+import wave
 import zlib
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import qrcode
 from qrcode.constants import ERROR_CORRECT_Q
@@ -35,6 +37,9 @@ AUDIO_VERSION = 1
 _AUDIO_BODY = struct.Struct(">BI32s")
 _AUDIO_CRC = struct.Struct(">I")
 AUDIO_RECORD_BYTES = len(AUDIO_PREAMBLE) + _AUDIO_BODY.size + _AUDIO_CRC.size
+_AUDIO_GUARD_SECONDS = 0.1
+_AUDIO_RAMP_SAMPLES = 4
+_AUDIO_PEAK = 0.7
 
 
 class FrameDecodeError(core.ALDError):
@@ -343,3 +348,173 @@ def manchester_decode(symbols: Sequence[int]) -> bytes:
             value = (value << 1) | bit
         output.append(value)
     return bytes(output)
+
+
+def _audio_layout(profile: MediaProfile) -> tuple[int, int, int, int]:
+    if type(profile) is not MediaProfile:
+        raise AudioDecodeError("profile must be an exact MediaProfile")
+    samples_per_symbol = profile.sample_rate // profile.symbol_rate
+    guard_samples = int(round(_AUDIO_GUARD_SECONDS * profile.sample_rate))
+    if guard_samples % samples_per_symbol != 0:
+        raise AudioDecodeError("audio guard must align to a complete symbol boundary")
+    record_samples = AUDIO_RECORD_BYTES * 8 * 2 * samples_per_symbol
+    total_samples = int(round(profile.interval_seconds * profile.sample_rate))
+    required = profile.copies * record_samples + (profile.copies + 1) * guard_samples
+    if required > total_samples:
+        raise AudioDecodeError("audio records do not fit inside the media interval")
+    return samples_per_symbol, guard_samples, record_samples, total_samples
+
+
+def _modulate_symbols(symbols: Sequence[int], profile: MediaProfile) -> np.ndarray:
+    samples_per_symbol, _, _, _ = _audio_layout(profile)
+    output = np.empty(len(symbols) * samples_per_symbol, dtype=np.float64)
+    phase = 0.0
+    cursor = 0
+    sample_indexes = np.arange(samples_per_symbol, dtype=np.float64)
+    for symbol in symbols:
+        if symbol not in (0, 1):
+            raise AudioDecodeError("BFSK symbols must be 0 or 1")
+        frequency = profile.mark_hz if symbol == 1 else profile.space_hz
+        step = 2.0 * math.pi * frequency / profile.sample_rate
+        output[cursor:cursor + samples_per_symbol] = np.sin(phase + step * sample_indexes)
+        phase = (phase + step * samples_per_symbol) % (2.0 * math.pi)
+        cursor += samples_per_symbol
+    if len(output) >= 2 * _AUDIO_RAMP_SAMPLES:
+        ramp = 0.5 - 0.5 * np.cos(np.linspace(0.0, math.pi, _AUDIO_RAMP_SAMPLES))
+        output[:_AUDIO_RAMP_SAMPLES] *= ramp
+        output[-_AUDIO_RAMP_SAMPLES:] *= ramp[::-1]
+    return output
+
+
+def encode_checksum_audio(sequence: int, digest: bytes, profile: MediaProfile) -> np.ndarray:
+    """Encode three Manchester/BFSK checksum copies into one fixed interval."""
+    _, guard_samples, record_samples, total_samples = _audio_layout(profile)
+    record = build_audio_record(sequence, digest)
+    symbols = manchester_encode(record)
+    copy_wave = _modulate_symbols(symbols, profile)
+    if len(copy_wave) != record_samples:
+        raise AudioDecodeError("internal BFSK record length mismatch")
+    output = np.zeros(total_samples, dtype=np.float64)
+    for copy_index in range(profile.copies):
+        start = guard_samples + copy_index * (record_samples + guard_samples)
+        output[start:start + record_samples] = copy_wave
+    peak = float(np.max(np.abs(output))) if len(output) else 0.0
+    if peak <= 0.0 or not math.isfinite(peak):
+        raise AudioDecodeError("BFSK waveform has no finite signal energy")
+    output *= _AUDIO_PEAK / peak
+    return output
+
+
+def write_checksum_wav(sequence: int, digest: bytes, profile: MediaProfile, destination: Path) -> Path:
+    samples = encode_checksum_audio(sequence, digest, profile)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pcm = np.rint(np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+    try:
+        with wave.open(str(destination), "wb") as target:
+            target.setnchannels(1)
+            target.setsampwidth(2)
+            target.setframerate(profile.sample_rate)
+            target.setcomptype("NONE", "not compressed")
+            target.writeframes(pcm.tobytes(order="C"))
+    except (OSError, wave.Error) as error:
+        raise AudioDecodeError(f"unable to write checksum WAV: {error}") from error
+    return destination
+
+
+def read_checksum_wav(path: Path, profile: MediaProfile) -> np.ndarray:
+    _, _, _, total_samples = _audio_layout(profile)
+    try:
+        with wave.open(str(Path(path)), "rb") as source:
+            if source.getnchannels() != 1:
+                raise AudioDecodeError("checksum WAV must be mono")
+            if source.getsampwidth() != 2:
+                raise AudioDecodeError("checksum WAV must use 16-bit PCM")
+            if source.getframerate() != profile.sample_rate:
+                raise AudioDecodeError("checksum WAV has unexpected sample rate")
+            if source.getcomptype() != "NONE":
+                raise AudioDecodeError("checksum WAV must be uncompressed PCM")
+            if source.getnframes() != total_samples:
+                raise AudioDecodeError("checksum WAV has unexpected duration")
+            raw = source.readframes(total_samples)
+    except AudioDecodeError:
+        raise
+    except (OSError, wave.Error, EOFError) as error:
+        raise AudioDecodeError(f"unable to read checksum WAV: {error}") from error
+    if len(raw) != total_samples * 2:
+        raise AudioDecodeError("checksum WAV PCM data is truncated")
+    return np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32767.0
+
+
+def _demodulate_symbols(samples: np.ndarray, profile: MediaProfile) -> tuple[int, ...]:
+    samples_per_symbol, _, _, total_samples = _audio_layout(profile)
+    if samples.shape != (total_samples,):
+        raise AudioDecodeError("checksum audio has unexpected duration")
+    windows = samples.reshape((-1, samples_per_symbol))
+    centered = windows - np.mean(windows, axis=1, keepdims=True)
+    time_indexes = np.arange(samples_per_symbol, dtype=np.float64) / profile.sample_rate
+
+    def energy(frequency: int) -> np.ndarray:
+        sine = np.sin(2.0 * math.pi * frequency * time_indexes)
+        cosine = np.cos(2.0 * math.pi * frequency * time_indexes)
+        sine_norm = float(np.dot(sine, sine))
+        cosine_norm = float(np.dot(cosine, cosine))
+        sine_dot = centered @ sine
+        cosine_dot = centered @ cosine
+        return (sine_dot * sine_dot) / sine_norm + (cosine_dot * cosine_dot) / cosine_norm
+
+    space_energy = energy(profile.space_hz)
+    mark_energy = energy(profile.mark_hz)
+    strongest = np.maximum(space_energy, mark_energy)
+    separation = np.abs(space_energy - mark_energy)
+    valid = (strongest > 1.0e-6) & (separation > strongest * 0.10)
+    symbols = np.full(len(windows), -1, dtype=np.int8)
+    symbols[valid & (mark_energy > space_energy)] = 1
+    symbols[valid & (space_energy > mark_energy)] = 0
+    return tuple(int(value) for value in symbols)
+
+
+def decode_checksum_audio(samples: Sequence[float] | np.ndarray, profile: MediaProfile) -> AudioRecord:
+    """Recover CRC-valid BFSK copies and require one unambiguous 2-of-3 vote."""
+    try:
+        values = np.asarray(samples, dtype=np.float64)
+    except (TypeError, ValueError) as error:
+        raise AudioDecodeError("checksum audio samples must be numeric") from error
+    if values.ndim != 1:
+        raise AudioDecodeError("checksum audio samples must be one-dimensional")
+    if not np.all(np.isfinite(values)):
+        raise AudioDecodeError("checksum audio contains non-finite samples")
+    symbols = _demodulate_symbols(values, profile)
+    preamble_symbols = manchester_encode(AUDIO_PREAMBLE)
+    record_symbol_count = AUDIO_RECORD_BYTES * 16
+    valid_records: list[AudioRecord] = []
+    cursor = 0
+    last_start = len(symbols) - record_symbol_count
+    while cursor <= last_start:
+        if symbols[cursor:cursor + len(preamble_symbols)] != preamble_symbols:
+            cursor += 1
+            continue
+        candidate = symbols[cursor:cursor + record_symbol_count]
+        if -1 in candidate:
+            cursor += 1
+            continue
+        try:
+            record_bytes = manchester_decode(candidate)
+            parsed = parse_audio_record(record_bytes)
+        except AudioDecodeError:
+            cursor += 1
+            continue
+        valid_records.append(parsed)
+        cursor += record_symbol_count
+
+    groups: dict[AudioRecord, int] = {}
+    for record in valid_records:
+        groups[record] = groups.get(record, 0) + 1
+    if len(groups) > 1:
+        raise AudioDecodeError("conflicting valid audio copies")
+    if not groups:
+        raise AudioDecodeError("expected at least two matching audio copies")
+    record, count = next(iter(groups.items()))
+    if count < profile.required_matching_copies:
+        raise AudioDecodeError("expected at least two matching audio copies")
+    return record
