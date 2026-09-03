@@ -310,7 +310,7 @@ def package_hls(
                 "-hls_segment_type",
                 "fmp4",
                 "-hls_fmp4_init_filename",
-                str(init_segment),
+                "init.mp4",
                 "-hls_flags",
                 "independent_segments",
                 "-hls_segment_filename",
