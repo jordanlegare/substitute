@@ -178,7 +178,7 @@ def sign_bundle_index(index_path: Path, private_key_path: Path) -> BundleSignatu
         private_key = serialization.load_pem_private_key(private_bytes, password=None)
     except (TypeError, ValueError) as error:
         raise SignatureError("signing key is not a valid unencrypted PEM private key") from error
-    if type(private_key) is not Ed25519PrivateKey:
+    if not isinstance(private_key, Ed25519PrivateKey):
         raise SignatureError("signing key must be an Ed25519 private key")
 
     public_key = private_key.public_key()
@@ -236,7 +236,7 @@ def verify_bundle_signature(index_path: Path, trusted_public_key: Path) -> Signa
         public_key = serialization.load_pem_public_key(public_bytes)
     except (TypeError, ValueError) as error:
         raise SignatureError("trusted public key is not a valid PEM public key") from error
-    if type(public_key) is not Ed25519PublicKey:
+    if not isinstance(public_key, Ed25519PublicKey):
         raise SignatureError("trusted public key must be an Ed25519 public key")
 
     trusted_fingerprint = _fingerprint(public_key, serialization)
