@@ -10,6 +10,7 @@ from _ald_core_tests_base import *  # noqa: F401,F403
 from dataclasses import replace
 import json
 import os
+from pathlib import Path
 from types import MappingProxyType
 
 import pytest
@@ -325,3 +326,29 @@ def test_unexpected_validate_failure_is_not_reported_as_dependency(monkeypatch, 
     assert status == ExitCode.RECIPE
     assert payload["error"]["code"] == "RECIPE"
     assert payload["error"]["code"] != "DEPENDENCY"
+
+
+def test_procedural_compression_reports_macro_expansion_without_materializing_site_events():
+    compiled = controller_module.compile_recipe(
+        controller_module.validate_recipe(
+            controller_module.load_recipe(Path("recipes/generic_al2o3.json"))
+        )
+    )
+    cycle_packets = [packet for packet in compiled.packets if packet.packet.opcode == "ALD_CYCLE"]
+
+    assert len(cycle_packets) == 1
+    assert cycle_packets[0].packet.arguments["repeat"] == 100
+
+    simulation = SimulatedALDController().execute(compiled, seed=42)
+    assert simulation.fault is None
+    assert len(simulation.cycles) == 100
+
+    assert hasattr(controller_module, "measure_procedural_compression")
+    report = controller_module.measure_procedural_compression(compiled, simulation)
+
+    assert report.canonical_instruction_bytes > 0
+    assert report.expanded_instruction_jsonl_bytes > report.canonical_instruction_bytes
+    assert report.expanded_instruction_ratio > 10.0
+    assert report.estimated_site_event_count == 200_000_000
+    assert report.estimated_site_event_jsonl_bytes > report.expanded_instruction_jsonl_bytes
+    assert report.estimated_site_event_ratio > report.expanded_instruction_ratio
