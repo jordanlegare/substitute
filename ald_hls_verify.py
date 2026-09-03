@@ -30,7 +30,11 @@ from ald_hls_integration import (
     run_media_tool,
 )
 from ald_hls_packaging import probe_media_json
-from ald_hls_signature import SignatureError, SignatureStatus, verify_bundle_signature
+from ald_hls_signature import (
+    SignatureError,
+    SignatureStatus,
+    verify_bundle_signature_bytes,
+)
 
 
 _VERIFY_TIMEOUT_SECONDS = 60.0
@@ -238,7 +242,9 @@ def _load_bundle_index(
         if trusted_public_key is None:
             raise IntegrityError("signed bundle requires a trusted public key")
         try:
-            signature_status = verify_bundle_signature(index_path, trusted_public_key)
+            signature_status = verify_bundle_signature_bytes(
+                raw_text.encode("utf-8"), trusted_public_key
+            )
         except core.DependencyError:
             raise
         except SignatureError as error:
