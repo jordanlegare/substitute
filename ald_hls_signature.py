@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
+import hmac
 import json
 import os
 from dataclasses import dataclass
@@ -221,7 +223,7 @@ def verify_bundle_signature(index_path: Path, trusted_public_key: Path) -> Signa
         raise SignatureError("bundle signature encoding is invalid")
     try:
         signature_bytes = base64.b64decode(encoded_signature, validate=True)
-    except (ValueError, base64.binascii.Error) as error:
+    except (ValueError, binascii.Error) as error:
         raise SignatureError("bundle signature is not valid base64") from error
     if len(signature_bytes) != 64:
         raise SignatureError("bundle Ed25519 signature must be 64 bytes")
@@ -238,7 +240,7 @@ def verify_bundle_signature(index_path: Path, trusted_public_key: Path) -> Signa
         raise SignatureError("trusted public key must be an Ed25519 public key")
 
     trusted_fingerprint = _fingerprint(public_key, serialization)
-    if not hashlib.sha256(bytes.fromhex(fingerprint)).digest() == hashlib.sha256(bytes.fromhex(trusted_fingerprint)).digest():
+    if not hmac.compare_digest(fingerprint, trusted_fingerprint):
         raise SignatureError("trusted public key fingerprint does not match bundle signature")
 
     try:
