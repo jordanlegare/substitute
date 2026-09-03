@@ -33,6 +33,7 @@ from ald_hls_signature import SignatureError, SignatureStatus, verify_bundle_sig
 
 
 _VERIFY_TIMEOUT_SECONDS = 60.0
+_TIMELINE_TOLERANCE_SECONDS = 0.05
 _BUNDLE_KEYS = frozenset(
     {
         "protocol",
@@ -233,8 +234,11 @@ def _load_bundle_index(
         if type(sequence) is not int or sequence != expected_sequence:
             raise IntegrityError("bundle packet sequence is not contiguous and zero-based")
         segment = _require_plain_string(packet["segment"], "bundle packet segment")
+        expected_segment = f"packet-{expected_sequence:06d}.m4s"
         if segment != playlist_segment.uri:
             raise IntegrityError("bundle packet segment does not match playlist order")
+        if segment != expected_segment:
+            raise IntegrityError("bundle packet filenames are not contiguous and zero-based")
         digest = _decode_digest(packet["digest"], "bundle packet digest")
         duration = packet["duration_seconds"]
         if type(duration) not in (int, float) or isinstance(duration, bool):
@@ -257,6 +261,28 @@ def _load_bundle_index(
         profile=profile,
         signature_status=signature_status,
     )
+
+
+def _validate_segment_file_set(playlist: LocalPlaylist) -> None:
+    root = playlist.path.parent
+    expected = {segment.uri for segment in playlist.segments}
+    try:
+        actual = {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("packet-*.m4s")
+        }
+    except (OSError, ValueError) as error:
+        raise IntegrityError(f"unable to enumerate bundle media segments: {error}") from error
+    if actual != expected:
+        extras = sorted(actual - expected)
+        missing = sorted(expected - actual)
+        details = []
+        if extras:
+            details.append(f"extra={extras}")
+        if missing:
+            details.append(f"missing={missing}")
+        suffix = "; ".join(details) if details else "mismatch"
+        raise IntegrityError(f"bundle segment set does not match index: {suffix}")
 
 
 def _copy_playable_fragment(initialization: Path, segment: Path, destination: Path) -> None:
@@ -290,6 +316,9 @@ def _validate_encoded_streams(
 
     video = by_type["video"]
     audio = by_type["audio"]
+    format_data = probe.get("format")
+    if type(format_data) is not dict:
+        raise IntegrityError(f"segment {sequence} format metadata is missing")
     try:
         if video.get("codec_name") != "h264":
             raise IntegrityError(f"segment {sequence} video is not H.264")
@@ -301,10 +330,36 @@ def _validate_encoded_streams(
             raise IntegrityError(f"segment {sequence} audio format does not match media profile")
         video_start = float(video.get("start_time"))
         audio_start = float(audio.get("start_time"))
+        format_duration = float(format_data.get("duration"))
     except (TypeError, ValueError) as error:
         raise IntegrityError(f"segment {sequence} stream metadata is incomplete") from error
-    if not math.isfinite(video_start) or not math.isfinite(audio_start):
+    if (
+        not math.isfinite(video_start)
+        or not math.isfinite(audio_start)
+        or not math.isfinite(format_duration)
+    ):
         raise IntegrityError(f"segment {sequence} stream timestamps are missing or non-finite")
+
+    expected_start = sequence * profile.interval_seconds
+    if (
+        abs(video_start - expected_start) > _TIMELINE_TOLERANCE_SECONDS
+        or abs(audio_start - expected_start) > _TIMELINE_TOLERANCE_SECONDS
+    ):
+        raise IntegrityError(
+            f"segment {sequence} timeline timestamp does not match expected media interval"
+        )
+
+    minimum_start = min(video_start, audio_start)
+    duration_candidates = (format_duration, format_duration - minimum_start)
+    if not any(
+        candidate > 0.0
+        and math.isfinite(candidate)
+        and abs(candidate - profile.interval_seconds) <= _TIMELINE_TOLERANCE_SECONDS
+        for candidate in duration_candidates
+    ):
+        raise IntegrityError(
+            f"segment {sequence} timeline duration does not match expected media interval"
+        )
 
 
 def _extract_encoded_records(
@@ -422,6 +477,7 @@ def verify_media_bundle(
         require_signature=require_signature,
         trusted_public_key=trusted_public_key,
     )
+    _validate_segment_file_set(playlist)
     capabilities = probe_media_capabilities()
     inert_records = _extract_encoded_records(playlist, loaded, capabilities)
 
