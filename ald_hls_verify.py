@@ -295,6 +295,16 @@ def _copy_playable_fragment(initialization: Path, segment: Path, destination: Pa
         raise IntegrityError(f"unable to construct local playable media fragment: {error}") from error
 
 
+def _stream_interval_matches(start: float, duration: float, expected: float) -> bool:
+    candidates = (duration, duration - start)
+    return any(
+        math.isfinite(candidate)
+        and candidate > 0.0
+        and abs(candidate - expected) <= _TIMELINE_TOLERANCE_SECONDS
+        for candidate in candidates
+    )
+
+
 def _validate_encoded_streams(
     probe: dict[str, Any],
     profile: media.MediaProfile,
@@ -334,9 +344,10 @@ def _validate_encoded_streams(
     values = (video_start, audio_start, video_duration, audio_duration)
     if any(not math.isfinite(value) for value in values):
         raise IntegrityError(f"segment {sequence} stream timestamps are missing or non-finite")
-    if (
-        abs(video_duration - profile.interval_seconds) > _TIMELINE_TOLERANCE_SECONDS
-        or abs(audio_duration - profile.interval_seconds) > _TIMELINE_TOLERANCE_SECONDS
+    if not _stream_interval_matches(
+        video_start, video_duration, profile.interval_seconds
+    ) or not _stream_interval_matches(
+        audio_start, audio_duration, profile.interval_seconds
     ):
         raise IntegrityError(
             f"segment {sequence} timeline duration does not match expected media interval"
