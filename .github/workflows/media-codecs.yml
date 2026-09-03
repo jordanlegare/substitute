@@ -1,0 +1,22 @@
+name: Media codecs
+
+on:
+  push:
+    branches:
+      - feat/ald-media-codecs
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: python -m pip install -e '.[test]'
+      - name: Tests
+        run: python -m pytest -q
+      - name: Compile
+        run: python -m py_compile ald_media_controller.py ald_core.py
