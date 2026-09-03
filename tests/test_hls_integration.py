@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import shutil
 import subprocess
 
@@ -8,15 +9,18 @@ from ald_media_controller import (
     DEFAULT_MEDIA_PROFILE,
     DependencyError,
     MediaBuildError,
+    MediaVerificationError,
     compile_recipe,
     load_recipe,
     mux_packet_mp4,
     package_hls,
+    parse_local_playlist,
     probe_media_capabilities,
     probe_media_json,
     run_media_tool,
     stage_packet_media,
     validate_recipe,
+    write_bundle_index,
 )
 
 
@@ -55,6 +59,37 @@ def packet_mp4s(staged_artifacts, media_capabilities, tmp_path_factory):
         )
         for artifact in staged_artifacts
     )
+
+
+def _write_playlist(
+    directory: Path,
+    *,
+    init_uri: str = "init.mp4",
+    segment_uri: str = "packet-000000.m4s",
+    duration: float = 3.0,
+    extra_tags: tuple[str, ...] = (),
+) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    if init_uri == "init.mp4":
+        (directory / init_uri).write_bytes(b"init")
+    if segment_uri == "packet-000000.m4s":
+        (directory / segment_uri).write_bytes(b"segment")
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:7",
+        "#EXT-X-TARGETDURATION:3",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:VOD",
+        "#EXT-X-INDEPENDENT-SEGMENTS",
+        f'#EXT-X-MAP:URI="{init_uri}"',
+        *extra_tags,
+        f"#EXTINF:{duration:.6f},",
+        segment_uri,
+        "#EXT-X-ENDLIST",
+    ]
+    path = directory / "stream.m3u8"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def test_missing_ffmpeg_maps_to_dependency_error(monkeypatch):
@@ -204,3 +239,100 @@ def test_hls_has_one_three_second_segment_per_packet(packet_mp4s, media_capabili
     assert segment_uris == [f"packet-{index:06d}.m4s" for index in range(len(packet_mp4s))]
     assert (manifest.parent / "init.mp4").is_file()
     assert all((manifest.parent / uri).is_file() for uri in segment_uris)
+
+
+def test_parse_local_playlist_accepts_normalized_bundle_playlist(tmp_path):
+    manifest = _write_playlist(tmp_path / "bundle")
+    playlist = parse_local_playlist(manifest)
+
+    assert playlist.path == manifest.resolve()
+    assert playlist.initialization_path == (manifest.parent / "init.mp4").resolve()
+    assert len(playlist.segments) == 1
+    assert playlist.segments[0].index == 0
+    assert playlist.segments[0].uri == "packet-000000.m4s"
+    assert playlist.segments[0].duration == pytest.approx(3.0)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://example.test/x.m4s",
+        "file:///tmp/x.m4s",
+        "/tmp/x.m4s",
+        "../x.m4s",
+        "nested/../../x.m4s",
+    ],
+)
+def test_playlist_rejects_nonlocal_or_escaping_segment_uri(uri, tmp_path):
+    manifest = _write_playlist(tmp_path / "bundle", segment_uri=uri)
+    with pytest.raises(MediaVerificationError, match="local relative"):
+        parse_local_playlist(manifest)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    ["https://example.test/init.mp4", "file:///tmp/init.mp4", "/tmp/init.mp4", "../init.mp4"],
+)
+def test_playlist_rejects_nonlocal_or_escaping_init_uri(uri, tmp_path):
+    manifest = _write_playlist(tmp_path / "bundle", init_uri=uri)
+    with pytest.raises(MediaVerificationError, match="local relative"):
+        parse_local_playlist(manifest)
+
+
+def test_playlist_rejects_discontinuity_and_out_of_range_duration(tmp_path):
+    discontinuous = _write_playlist(
+        tmp_path / "discontinuous",
+        extra_tags=("#EXT-X-DISCONTINUITY",),
+    )
+    with pytest.raises(MediaVerificationError, match="discontinuity"):
+        parse_local_playlist(discontinuous)
+
+    too_long = _write_playlist(tmp_path / "too-long", duration=3.2)
+    with pytest.raises(MediaVerificationError, match="duration"):
+        parse_local_playlist(too_long)
+
+
+def test_bundle_index_records_ordered_digests_and_root(compiled_recipe, tmp_path):
+    directory = tmp_path / "bundle"
+    directory.mkdir()
+    (directory / "init.mp4").write_bytes(b"init")
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:7",
+        "#EXT-X-TARGETDURATION:3",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:VOD",
+        "#EXT-X-INDEPENDENT-SEGMENTS",
+        '#EXT-X-MAP:URI="init.mp4"',
+    ]
+    for index in range(len(compiled_recipe.packets)):
+        name = f"packet-{index:06d}.m4s"
+        (directory / name).write_bytes(f"segment-{index}".encode())
+        lines.extend(("#EXTINF:3.000000,", name))
+    lines.append("#EXT-X-ENDLIST")
+    manifest = directory / "stream.m3u8"
+    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    playlist = parse_local_playlist(manifest)
+
+    path = write_bundle_index(
+        compiled_recipe,
+        playlist,
+        DEFAULT_MEDIA_PROFILE,
+        directory / "bundle.json",
+        ffmpeg_version="ffmpeg-test-1",
+        video_encoder="libx264",
+        audio_encoder="aac",
+    )
+    raw = path.read_text(encoding="utf-8")
+    data = json.loads(raw)
+
+    assert [packet["sequence"] for packet in data["packets"]] == list(range(len(compiled_recipe.packets)))
+    assert [packet["digest"] for packet in data["packets"]] == [
+        packet.digest.hex() for packet in compiled_recipe.packets
+    ]
+    assert data["root_hash"] == compiled_recipe.root_hash.hex()
+    assert data["manifest"] == "stream.m3u8"
+    assert data["initialization"] == "init.mp4"
+    assert data["ffmpeg"]["version"] == "ffmpeg-test-1"
+    assert data["signature"] is None
+    assert raw == json.dumps(data, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
