@@ -6,7 +6,7 @@ access and has no industrial-hardware control path.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -16,6 +16,7 @@ from pathlib import Path
 import struct
 import textwrap
 from typing import Any
+import zlib
 
 from PIL import Image, ImageDraw, ImageFont
 import qrcode
@@ -29,9 +30,19 @@ QR_MAGIC = b"ALDQ\x01"
 _QR_HEADER = struct.Struct(">IH")
 _MAX_PACKET_BYTES = 800
 
+AUDIO_PREAMBLE = b"\xAA" * 8
+AUDIO_VERSION = 1
+_AUDIO_BODY = struct.Struct(">BI32s")
+_AUDIO_CRC = struct.Struct(">I")
+AUDIO_RECORD_BYTES = len(AUDIO_PREAMBLE) + _AUDIO_BODY.size + _AUDIO_CRC.size
+
 
 class FrameDecodeError(core.ALDError):
     exit_code = core.ExitCode.FRAME
+
+
+class AudioDecodeError(core.ALDError):
+    exit_code = core.ExitCode.AUDIO
 
 
 @dataclass(frozen=True)
@@ -81,6 +92,13 @@ class DecodedFrameRecord:
     canonical_bytes: bytes
 
 
+@dataclass(frozen=True)
+class AudioRecord:
+    version: int
+    sequence: int
+    digest: bytes
+
+
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -113,11 +131,8 @@ def _decode_canonical_packet(payload: bytes) -> core.Packet:
         raise FrameDecodeError("canonical packet has unexpected fields")
     try:
         packet = core.Packet(
-            protocol=raw["protocol"],
-            recipe_id=raw["recipe_id"],
-            sequence=raw["sequence"],
-            opcode=raw["opcode"],
-            arguments=raw["arguments"],
+            protocol=raw["protocol"], recipe_id=raw["recipe_id"], sequence=raw["sequence"],
+            opcode=raw["opcode"], arguments=raw["arguments"],
         )
         normalized = core.canonical_packet_bytes(packet)
     except core.ALDError as error:
@@ -160,12 +175,6 @@ def encode_qr_payload(item: core.HashedPacket) -> bytes:
 
 
 def decode_qr_payload(data: bytes) -> DecodedFrameRecord:
-    """Decode a strict QR envelope and verify its canonical packet framing.
-
-    The embedded digest is preserved verbatim. Its relationship to the prior
-    packet digest is verified by the later ordered chain verifier, because an
-    individual QR envelope intentionally does not carry the previous digest.
-    """
     if type(data) is not bytes:
         raise FrameDecodeError("QR payload must be exact bytes")
     prefix_length = len(QR_MAGIC) + _QR_HEADER.size + 32
@@ -202,59 +211,35 @@ def _wrap_pixel_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int)
         raise FrameDecodeError("instruction frame has no text area")
     unit = max(draw.textlength("M", font=font), 1.0)
     width = max(int(max_width / unit), 1)
-    wrapped = textwrap.wrap(text, width=width, break_long_words=True, break_on_hyphens=False)
-    return wrapped or [""]
+    return textwrap.wrap(text, width=width, break_long_words=True, break_on_hyphens=False) or [""]
 
 
 def render_instruction_frame(item: core.HashedPacket, profile: MediaProfile, destination: Path) -> Path:
-    """Render one deterministic executable instruction PNG."""
     if type(profile) is not MediaProfile:
         raise FrameDecodeError("profile must be an exact MediaProfile")
     _validate_hashed_packet(item)
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-
-    qr = qrcode.QRCode(
-        error_correction=ERROR_CORRECT_Q,
-        box_size=profile.qr_box_size,
-        border=profile.qr_border_modules,
-    )
+    qr = qrcode.QRCode(error_correction=ERROR_CORRECT_Q, box_size=profile.qr_box_size, border=profile.qr_border_modules)
     qr.add_data(encode_qr_payload(item), optimize=0)
     try:
         qr.make(fit=True)
         symbol = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     except Exception as error:
         raise FrameDecodeError(f"unable to render QR symbol: {error}") from error
-
-    margin = 32
-    gutter = 48
+    margin, gutter = 32, 48
     if symbol.width + 2 * margin > profile.width or symbol.height + 2 * margin > profile.height:
         raise FrameDecodeError("QR symbol exceeds instruction frame bounds")
     text_x = margin + symbol.width + gutter
     text_width = profile.width - text_x - margin
     if text_width <= 0:
         raise FrameDecodeError("QR symbol leaves no room for instruction text")
-
     image = Image.new("RGB", (profile.width, profile.height), "white")
-    qr_y = (profile.height - symbol.height) // 2
-    image.paste(symbol, (margin, qr_y))
+    image.paste(symbol, (margin, (profile.height - symbol.height) // 2))
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default(size=24)
-
-    arguments = json.dumps(
-        _plain_json(item.packet.arguments),
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    lines = [
-        item.packet.protocol,
-        f"Recipe: {item.packet.recipe_id}",
-        f"Sequence: {item.packet.sequence}",
-        f"Opcode: {item.packet.opcode}",
-        "Arguments:",
-    ]
+    arguments = json.dumps(_plain_json(item.packet.arguments), ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    lines = [item.packet.protocol, f"Recipe: {item.packet.recipe_id}", f"Sequence: {item.packet.sequence}", f"Opcode: {item.packet.opcode}", "Arguments:"]
     lines.extend(_wrap_pixel_text(draw, arguments, font, text_width))
     lines.append("Digest:")
     lines.extend(_wrap_pixel_text(draw, item.digest.hex(), font, text_width))
@@ -263,7 +248,6 @@ def render_instruction_frame(item: core.HashedPacket, profile: MediaProfile, des
     if bbox[2] > profile.width - margin or bbox[3] > profile.height - margin:
         raise FrameDecodeError("instruction text exceeds frame bounds")
     draw.multiline_text((text_x, margin), text, fill="black", font=font, spacing=8)
-
     try:
         image.save(destination, format="PNG", optimize=False, compress_level=9)
     except OSError as error:
@@ -272,7 +256,6 @@ def render_instruction_frame(item: core.HashedPacket, profile: MediaProfile, des
 
 
 def decode_instruction_frame(path: Path, profile: MediaProfile) -> DecodedFrameRecord:
-    """Decode exactly one raw QR byte payload from a fixed-size instruction frame."""
     if type(profile) is not MediaProfile:
         raise FrameDecodeError("profile must be an exact MediaProfile")
     try:
@@ -288,5 +271,75 @@ def decode_instruction_frame(path: Path, profile: MediaProfile) -> DecodedFrameR
         raise FrameDecodeError(f"unable to decode QR frame: {error}") from error
     if len(results) != 1:
         raise FrameDecodeError(f"expected exactly one QR code, found {len(results)}")
-    raw = bytes(results[0].bytes)
-    return decode_qr_payload(raw)
+    return decode_qr_payload(bytes(results[0].bytes))
+
+
+def build_audio_record(sequence: int, digest: bytes) -> bytes:
+    """Build the fixed 49-byte checksum record specified by the media profile."""
+    if type(sequence) is not int or not 0 <= sequence <= 0xFFFFFFFF:
+        raise AudioDecodeError("invalid audio sequence")
+    if type(digest) is not bytes or len(digest) != 32:
+        raise AudioDecodeError("audio digest must be exactly 32 bytes")
+    body = _AUDIO_BODY.pack(AUDIO_VERSION, sequence, digest)
+    crc = zlib.crc32(body) & 0xFFFFFFFF
+    return AUDIO_PREAMBLE + body + _AUDIO_CRC.pack(crc)
+
+
+def parse_audio_record(record: bytes) -> AudioRecord:
+    if type(record) is not bytes:
+        raise AudioDecodeError("audio record must be exact bytes")
+    if len(record) != AUDIO_RECORD_BYTES:
+        raise AudioDecodeError(f"audio record must be exactly {AUDIO_RECORD_BYTES} bytes")
+    if record[: len(AUDIO_PREAMBLE)] != AUDIO_PREAMBLE:
+        raise AudioDecodeError("audio preamble mismatch")
+    body_start = len(AUDIO_PREAMBLE)
+    body_end = body_start + _AUDIO_BODY.size
+    body = record[body_start:body_end]
+    version, sequence, digest = _AUDIO_BODY.unpack(body)
+    if version != AUDIO_VERSION:
+        raise AudioDecodeError("unsupported audio protocol version")
+    expected_crc = zlib.crc32(body) & 0xFFFFFFFF
+    (actual_crc,) = _AUDIO_CRC.unpack(record[body_end:])
+    if actual_crc != expected_crc:
+        raise AudioDecodeError("audio CRC mismatch")
+    return AudioRecord(version=version, sequence=sequence, digest=digest)
+
+
+def manchester_encode(data: bytes) -> tuple[int, ...]:
+    if type(data) is not bytes:
+        raise AudioDecodeError("Manchester input must be exact bytes")
+    symbols: list[int] = []
+    for byte in data:
+        for shift in range(7, -1, -1):
+            bit = (byte >> shift) & 1
+            symbols.extend((0, 1) if bit == 0 else (1, 0))
+    return tuple(symbols)
+
+
+def manchester_decode(symbols: Sequence[int]) -> bytes:
+    if isinstance(symbols, (str, bytes, bytearray)):
+        raise AudioDecodeError("Manchester symbols must be a numeric sequence")
+    try:
+        values = tuple(symbols)
+    except TypeError as error:
+        raise AudioDecodeError("Manchester symbols must be a sequence") from error
+    if len(values) % 16 != 0:
+        raise AudioDecodeError("Manchester symbol count must encode complete bytes")
+    bits: list[int] = []
+    for index in range(0, len(values), 2):
+        left, right = values[index:index + 2]
+        if type(left) is not int or type(right) is not int:
+            raise AudioDecodeError("Manchester symbols must be integer 0/1 values")
+        if (left, right) == (0, 1):
+            bits.append(0)
+        elif (left, right) == (1, 0):
+            bits.append(1)
+        else:
+            raise AudioDecodeError("invalid Manchester symbol pair")
+    output = bytearray()
+    for index in range(0, len(bits), 8):
+        value = 0
+        for bit in bits[index:index + 8]:
+            value = (value << 1) | bit
+        output.append(value)
+    return bytes(output)
