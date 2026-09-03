@@ -1,159 +1,526 @@
-# substitute
+# Substitute — Verified Media-Encoded ALD Simulator
 
-Research and simulation artifacts for a media-encoded atomic layer deposition (ALD) instruction controller.
+Substitute is an **offline atomic layer deposition (ALD) recipe compiler, deterministic simulator, and verified media transport experiment**.
 
-> **Safety boundary:** this project is an offline recipe compiler and simulated controller. It does not control industrial hardware, initiate network control, or replace PLC, hardwired, or vendor safety interlocks. The generic precursor names and Al2O3 mapping are simulation labels, not operational handling instructions.
+It can run a validated recipe directly in the simulator, or encode the same compact instruction packets into QR video plus redundant BFSK checksum audio, package them as local HLS/fMP4, verify the completed encoded media, and then feed the verified packet stream back into the **same simulator**.
 
-## What the project does
+> **Safety boundary**
+>
+> Substitute does **not** control industrial hardware. It does not open valves, drive heaters, pumps, mass-flow controllers, precursor delivery, PLCs, field buses, networked process equipment, or vendor safety systems. The included generic A/B and Al2O3 examples are simulation labels and are not chemical-handling or machine-operation instructions.
 
-The project supports two deterministic execution modes over the same validated recipe and controller model:
+## What can I do with it?
 
-1. **Direct simulation** — validate and compile the recipe in memory, then execute the simulated controller.
-2. **Verified media simulation** — compile the same compact instruction packets into QR video plus BFSK checksum audio, mux/package them as local HLS/fMP4, decode the completed encoded media, verify every integrity boundary, then execute the same simulated controller.
+| Goal | Command |
+| --- | --- |
+| Check that a recipe is valid | `ald-media-controller validate ...` |
+| Run a deterministic simulation directly | `ald-media-controller simulate ...` |
+| Encode a recipe into a verified local HLS/fMP4 bundle | `ald-media-controller compile ...` |
+| Verify an existing media bundle | `ald-media-controller verify ...` |
+| Verify a media bundle and then simulate it | `ald-media-controller simulate-media ...` |
 
-The media path is deliberately not a hardware-control adapter. A verified media bundle becomes input only to the simulator.
+The two simulation paths are designed to be equivalent: for the same canonical recipe, verified packet stream, controller implementation, and random seed, direct simulation and verified-media simulation should produce the same deterministic reports.
 
-## Core instruction and simulation model
+## Requirements
 
-The deterministic core provides:
+You need:
 
-- strict `ALD-MEDIA/1` recipe validation;
-- canonical compact JSON instruction packets;
-- the chained integrity formula `H_i = SHA-256("ALD1" || H_(i-1) || P_i)` with a 32-byte zero `H_0`;
-- compact repeated `ALD_CYCLE` packets that retain `repeat` rather than unrolling every cycle;
-- a deterministic region/site surface model with bounded atom-event samples;
-- a simulated ALD controller state machine with interlocks and fail-closed fault handling;
-- transactional publication of `audit.jsonl`, `cycles.csv`, `surface-final.json`, and `fault.json` when a simulated fault occurs.
+- Python **3.10 or newer**;
+- `ffmpeg` and `ffprobe` on your `PATH` for media compilation and media verification;
+- FFmpeg support for H.264, AAC, MP4/fMP4, and HLS;
+- the optional Python `signature` extra only if you want Ed25519 signing or signature verification.
 
-## QR and BFSK packet media
+Check the media tools before starting:
 
-Each compact hashed packet has a fixed three-second **transport-media interval**. The three seconds are a framing/transport property and are not the simulated process duration of the ALD instruction.
+```bash
+ffmpeg -version
+ffprobe -version
+```
 
-The local codec layer provides:
+## Install
 
-- 1920x1080 QR-Q instruction frames with at least eight encoded pixels per module;
-- a strict binary QR envelope carrying sequence, chained packet digest, and the executable canonical packet bytes;
-- raw-byte QR decoding through ZXing, with zero/multiple-code ambiguity rejected and no OCR execution path;
-- a 49-byte checksum record containing the 64-bit alternating preamble, protocol version, big-endian sequence, 256-bit packet digest, and CRC-32;
-- Manchester coding with `0 -> 01` and `1 -> 10`;
-- phase-continuous 1200/2400 Hz BFSK at 1200 symbols/second, mono 48 kHz PCM, with three record copies per interval;
-- correlation decoding that requires at least two matching CRC-valid audio copies;
-- deterministic packet staging with immediate frame/audio cross-verification.
+Clone the repository and install the command-line tool:
 
-The QR channel contains the executable canonical packet. The BFSK channel is redundant integrity evidence: its sequence and digest must agree with the QR frame, bundle index, and recomputed ALD1 hash chain.
+```bash
+git clone https://github.com/jordanlegare/substitute.git
+cd substitute
+python -m pip install -e .
+```
 
-## HLS/fMP4 bundle
+This installs the executable:
 
-`compile` encodes the staged packet media as H.264/AAC and publishes a local fMP4 HLS VOD bundle only after the **completed encoded media** verifies successfully. Verification never substitutes the source PNG/WAV staging artifacts for the encoded output.
+```bash
+ald-media-controller
+```
 
-A published bundle contains:
+If you also want Ed25519 bundle signing and trusted-key verification:
 
-- `stream.m3u8` — normalized local HLS media playlist;
-- `init.mp4` — shared fMP4 initialization segment;
-- `packet-000000.m4s`, ... — one media segment per compact instruction packet;
-- `bundle.json` — canonical ordered packet/index/root/profile metadata, the canonical-recipe SHA-256 binding, and optional signature;
-- `recipe.canonical.json` — exact canonical recipe bytes containing the simulation configuration used to rebind verified media to the simulator.
+```bash
+python -m pip install -e '.[signature]'
+```
 
-`bundle.json` records both the fixed path `recipe.canonical.json` and SHA-256 of its exact bytes. Verification rejects a missing, symlinked, renamed, or digest-mismatched recipe artifact. The verified recipe bytes are retained in memory and `simulate-media` parses those verified bytes from a private scratch file rather than reopening the mutable bundle recipe after verification.
-
-Bundle publication is transactional. Existing output is preserved unless `--overwrite` is supplied, and a replacement is not published until the new encoded bundle has verified.
-
-### Fail-closed verification
-
-The verifier rejects a bundle before exposing executable packets when any required independent record disagrees. Among other checks, it rejects:
-
-- absolute paths, URL/scheme-bearing paths, path traversal, and unsupported playlist forms;
-- discontinuities, encryption/key tags, master-playlist forms, byte ranges, malformed or out-of-range durations;
-- missing, extra, duplicate, non-contiguous, or unexpectedly named media segments;
-- unexpected stream codecs/formats;
-- segment audio/video timeline drift relative to the cumulative verified playlist timeline;
-- frame/audio/index sequence disagreement;
-- frame/audio/index digest disagreement;
-- missing or modified canonical recipe bytes relative to the recipe SHA-256 declared by `bundle.json`;
-- malformed canonical packet bytes;
-- recomputed ALD1 hash-chain or terminal-root mismatch.
-
-FFmpeg is invoked only through a bounded local subprocess boundary with argument vectors, `shell=False`, no stdin, and timeouts. The verifier parses and resolves local bundle paths itself rather than handing an untrusted HLS manifest to FFmpeg.
-
-## Integrity versus optional Ed25519 bundle identity
-
-Checksum/hash consistency and publisher identity are separate concerns.
-
-Unsigned bundles are permitted by default. Their packet hash chain, redundant media records, bundle index, and canonical-recipe SHA-256 provide fail-closed **consistency and corruption detection**, but an unsigned bundle does not authenticate who created it; a party able to replace a whole unsigned bundle can construct new internally consistent hashes as well.
-
-When `bundle.json` is signed, the Ed25519 signature covers the canonical unsigned index bytes. Because the index contains the packet/root metadata **and the SHA-256 of `recipe.canonical.json`**, a valid signature from a caller-trusted public key authenticates the exact recipe/configuration binding as well as the declared media metadata. `--require-signature` rejects unsigned bundles.
-
-Install the optional signature dependency with the `signature` extra. Private keys are inputs to explicit signing operations; they are not embedded in bundles.
-
-## Install for development
-
-Python 3.10 or newer is required. Media compilation/verification also requires local `ffmpeg` and `ffprobe` binaries with H.264, AAC, MP4, and HLS support.
+For development and the full test suite:
 
 ```bash
 python -m pip install -e '.[test,signature]'
 ```
 
-## Reproducible generic Al2O3 workflow
+## 5-minute quick start
 
-Validate the checked-in generic A/B simulation recipe:
+The repository includes `recipes/generic_al2o3.json`, a generic A/B ALD simulation recipe used by the acceptance workflow.
+
+### 1. Validate the recipe
 
 ```bash
 ald-media-controller validate recipes/generic_al2o3.json
 ```
 
-Run direct simulation:
+A successful command exits normally. Invalid recipes fail with a structured JSON error on stderr.
+
+### 2. Run the recipe directly in the simulator
 
 ```bash
-ald-media-controller simulate recipes/generic_al2o3.json --seed 42 --output build/direct
+ald-media-controller simulate \
+  recipes/generic_al2o3.json \
+  --seed 42 \
+  --output build/direct
 ```
 
-Compile and verify the completed HLS/fMP4 bundle:
+The seed is required so deterministic runs are explicit and reproducible.
+
+### 3. Compile the recipe into verified media
 
 ```bash
-ald-media-controller compile recipes/generic_al2o3.json --output build/al2o3
+ald-media-controller compile \
+  recipes/generic_al2o3.json \
+  --output build/al2o3
+```
+
+`compile` stages QR and BFSK media, encodes it as H.264/AAC, packages a local fMP4 HLS bundle, verifies the **completed encoded bundle**, and only then publishes the output directory.
+
+### 4. Verify the media bundle
+
+```bash
 ald-media-controller verify build/al2o3/stream.m3u8
 ```
 
-Execute the verified media through the simulator:
+A successful verification prints compact JSON similar to:
 
-```bash
-ald-media-controller simulate-media build/al2o3/stream.m3u8 --seed 42 --output build/media
+```json
+{"media_profile":{...},"packet_count":7,"protocol":"ALD-MEDIA/1","root_hash":"...","signature_status":"UNSIGNED"}
 ```
 
-For the same canonical recipe, verified packet stream, controller implementation, and seed, direct and media modes are expected to produce byte-identical deterministic simulation reports. The CI acceptance workflow checks `cycles.csv` and `surface-final.json` directly.
+### 5. Simulate from the verified media
 
-Existing output directories are not replaced unless `--overwrite` is supplied.
+```bash
+ald-media-controller simulate-media \
+  build/al2o3/stream.m3u8 \
+  --seed 42 \
+  --output build/media
+```
 
-## Procedural compaction and media size
+`simulate-media` always verifies the bundle first. Only after verification succeeds are the recovered canonical packets and verified recipe configuration passed to the deterministic simulator.
 
-The project reports two deliberately separate kinds of size information:
+### 6. Compare direct and media results
 
-- `measure_procedural_compression(...)` compares the compact canonical packet stream with an **analytical** naive JSONL expansion in which repeated `ALD_CYCLE` operations are serialized individually. It also estimates a per-site, per-half-reaction event JSONL expansion arithmetically. The estimator never allocates that giant event stream.
-- `measure_hls_bundle_bytes(...)` reports the physical bytes occupied by a flat verified HLS bundle and rejects symlinks/non-regular entries.
+For the checked-in demonstration recipe and seed 42:
 
-These numbers answer different questions. The compact procedural instruction representation can avoid enormous repeated instruction/event expansions; **HLS/fMP4 is a redundant transport and verification container, not claimed to be a compression gain over the canonical instruction bytes.** Encoded video/audio intentionally adds redundancy and media overhead.
+```bash
+cmp build/direct/cycles.csv build/media/cycles.csv
+cmp build/direct/surface-final.json build/media/surface-final.json
+```
 
-For the checked-in demonstration recipe, one compact `ALD_CYCLE` packet represents 100 simulated cycles over an aggregate surface of 1,000,000 sites. The analytical potential half-reaction/site-event count is therefore 200,000,000 without materializing 200 million records.
+The project CI performs these same byte-for-byte comparisons.
 
-A verified Ubuntu/FFmpeg acceptance run for this recipe measured 1,140 canonical instruction bytes versus 27,076 bytes for the analytical per-cycle instruction expansion, a 23.75x procedural instruction ratio. The analytical site-event JSONL estimate was 16.6 GB. The generated HLS/fMP4 bundle was 512,981 bytes in that run; physical media size is informational and can vary with encoder/tool versions.
+## Command reference
 
-## Tests and acceptance
+### `validate`
 
-Run the complete suite with:
+Validate and compile a recipe without running a simulation or creating a media bundle.
+
+```bash
+ald-media-controller validate RECIPE.json
+```
+
+Use this first when authoring or modifying recipes.
+
+### `simulate`
+
+Run a validated recipe directly through the deterministic simulated controller.
+
+```bash
+ald-media-controller simulate RECIPE.json \
+  --seed 42 \
+  --output build/direct
+```
+
+Options:
+
+- `--seed N` — required deterministic random seed;
+- `--output DIR` — required report directory;
+- `--overwrite` — replace an existing safe output directory;
+- `--log-level DEBUG` — include a traceback for CLI failures.
+
+### `compile`
+
+Compile a recipe into a verified local HLS/fMP4 bundle.
+
+```bash
+ald-media-controller compile RECIPE.json \
+  --output build/bundle
+```
+
+Options:
+
+- `--output DIR` — required bundle directory;
+- `--overwrite` — transactionally replace an existing safe bundle directory;
+- `--signing-key PRIVATE.pem` — sign `bundle.json` with an Ed25519 private key;
+- `--log-level DEBUG` — include a traceback for failures.
+
+The output is not published until the completed encoded media has passed verification.
+
+### `verify`
+
+Verify a completed local media bundle.
+
+```bash
+ald-media-controller verify build/bundle/stream.m3u8
+```
+
+For a signed bundle:
+
+```bash
+ald-media-controller verify build/bundle/stream.m3u8 \
+  --require-signature \
+  --trusted-public-key keys/publisher-public.pem
+```
+
+Options:
+
+- `--require-signature` — reject unsigned bundles;
+- `--trusted-public-key PUBLIC.pem` — caller-supplied trusted Ed25519 public key;
+- `--log-level DEBUG` — include a traceback for failures.
+
+A signed bundle is **not** trusted merely because it contains a fingerprint. Trust comes from the public key supplied by the caller.
+
+### `simulate-media`
+
+Verify a bundle and, only if verification succeeds, execute the recovered recipe in the deterministic simulator.
+
+```bash
+ald-media-controller simulate-media build/bundle/stream.m3u8 \
+  --seed 42 \
+  --output build/media
+```
+
+For signed-only execution:
+
+```bash
+ald-media-controller simulate-media build/bundle/stream.m3u8 \
+  --seed 42 \
+  --output build/media \
+  --require-signature \
+  --trusted-public-key keys/publisher-public.pem
+```
+
+Use an output directory separate from the media bundle. The CLI rejects output paths that overlap the bundle or its ancestors.
+
+## What gets written?
+
+### Simulation reports
+
+A successful simulation publishes deterministic reports such as:
+
+- `audit.jsonl` — controller/audit events;
+- `cycles.csv` — per-cycle simulation metrics;
+- `surface-final.json` — final simulated surface state;
+- `fault.json` — written when a simulated controller fault occurs.
+
+Report publication is transactional: existing outputs are not silently replaced.
+
+### Media bundle
+
+A compiled bundle contains:
+
+```text
+build/bundle/
+├── stream.m3u8
+├── init.mp4
+├── packet-000000.m4s
+├── packet-000001.m4s
+├── ...
+├── bundle.json
+└── recipe.canonical.json
+```
+
+The important files are:
+
+- `stream.m3u8` — normalized local HLS media playlist;
+- `init.mp4` — shared fragmented-MP4 initialization segment;
+- `packet-*.m4s` — one encoded media segment per compact instruction packet;
+- `bundle.json` — canonical ordered packet metadata, media profile, root hash, recipe digest, and optional Ed25519 signature;
+- `recipe.canonical.json` — exact canonical recipe/configuration bytes bound to `bundle.json` by SHA-256.
+
+Do not manually edit generated bundle files and expect verification to continue succeeding. The verifier is intentionally fail-closed.
+
+## Signed bundles
+
+Unsigned bundles provide integrity consistency and corruption/tamper detection across the redundant records, but they do **not** prove who created the bundle. A party that can replace an entire unsigned bundle can create a different internally consistent unsigned bundle.
+
+For publisher identity, use Ed25519 signatures and distribute the public key through a channel you trust.
+
+### Install signature support
+
+```bash
+python -m pip install -e '.[signature]'
+```
+
+### Create an Ed25519 key pair
+
+One option is OpenSSL:
+
+```bash
+mkdir -p keys
+openssl genpkey -algorithm Ed25519 -out keys/publisher-private.pem
+openssl pkey \
+  -in keys/publisher-private.pem \
+  -pubout \
+  -out keys/publisher-public.pem
+```
+
+Keep `publisher-private.pem` private. The public key is what verifiers should receive through a trusted channel.
+
+### Compile a signed bundle
+
+```bash
+ald-media-controller compile \
+  recipes/generic_al2o3.json \
+  --output build/signed-al2o3 \
+  --signing-key keys/publisher-private.pem
+```
+
+### Require the trusted signature when verifying
+
+```bash
+ald-media-controller verify build/signed-al2o3/stream.m3u8 \
+  --require-signature \
+  --trusted-public-key keys/publisher-public.pem
+```
+
+The Ed25519 signature covers the canonical unsigned bundle index. That index binds the ordered packet digests/root, media profile, and SHA-256 of `recipe.canonical.json`, so a valid signature authenticates the declared recipe/configuration binding as well.
+
+## Direct mode or media mode?
+
+Use **direct simulation** when you want the shortest route from a JSON recipe to deterministic simulation results.
+
+Use **verified media simulation** when you want to exercise the experimental transport/integrity layer:
+
+```text
+recipe
+  ↓
+canonical compact packets
+  ↓
+QR instruction frames + redundant BFSK digest audio
+  ↓
+H.264/AAC fragmented MP4 / HLS
+  ↓
+fail-closed verification
+  ↓
+same deterministic simulator
+```
+
+The three-second media interval used for each packet is a transport framing interval. It is **not** the physical or simulated duration of an ALD process step.
+
+## What verification checks
+
+Before packets become executable simulator input, the verifier checks the completed encoded bundle across multiple independent records.
+
+It rejects, among other things:
+
+- unsafe absolute, URL-bearing, traversal, or escaping paths;
+- unsupported HLS constructs such as master playlists, keys/encryption, discontinuities, and byte ranges;
+- missing, duplicate, extra, misordered, or unexpected `.m4s` media fragments;
+- incorrect media codecs or stream properties;
+- audio/video segment timeline drift;
+- QR sequence/digest disagreement;
+- BFSK sequence/digest disagreement;
+- disagreement between QR, audio, `bundle.json`, and the recomputed packet hash chain;
+- missing or modified `recipe.canonical.json` bytes;
+- malformed canonical instruction packets;
+- terminal ALD1 root-hash mismatch;
+- invalid, mismatched, or untrusted Ed25519 signatures when signature verification is requested.
+
+The HLS manifest is parsed and path-checked by Substitute itself. The verifier does not hand an untrusted playlist directly to FFmpeg as an executable network/media locator.
+
+## How the media encoding works
+
+The executable instruction bytes live in the QR channel. The audio channel is redundant integrity evidence.
+
+Default media profile:
+
+- frame size: **1920 × 1080**;
+- QR error correction: **Q**;
+- QR box/module scale: **8**;
+- QR quiet-zone border: **4 modules**;
+- media interval: **3.0 seconds per packet**;
+- audio: **48 kHz mono PCM** before AAC encoding;
+- BFSK: **1200 symbols/s**;
+- space: **1200 Hz**;
+- mark: **2400 Hz**;
+- checksum copies per interval: **3**;
+- matching CRC-valid copies required: **2**.
+
+The 49-byte audio record carries a preamble, protocol version, packet sequence, 256-bit packet digest, and CRC-32. It is Manchester coded before BFSK modulation.
+
+## Packet integrity model
+
+Validated instructions are serialized as deterministic canonical JSON packets. Packet integrity is chained:
+
+```text
+H_i = SHA-256( ASCII("ALD1") || H_(i-1) || P_i )
+```
+
+where:
+
+- `P_i` is the canonical packet byte string;
+- `H_0` is 32 zero bytes;
+- the final packet digest is the bundle root hash.
+
+Repeated ALD cycles remain compact: an `ALD_CYCLE` packet keeps its `repeat` count rather than being expanded into hundreds of nearly identical instruction records.
+
+## Procedural compaction vs. HLS size
+
+Substitute deliberately reports two different size concepts.
+
+`measure_procedural_compression(...)` compares the compact instruction representation with an analytical naive expansion. For the checked-in demonstration recipe, the accepted integration run measured:
+
+- canonical instruction bytes: **1,140**;
+- analytical per-cycle instruction JSONL bytes: **27,076**;
+- procedural instruction ratio: **23.75×**;
+- estimated potential half-reaction/site events: **200,000,000**;
+- estimated site-event JSONL size: **16.6 GB**.
+
+Those large event counts are estimated arithmetically; the simulator does not allocate hundreds of millions of event objects just to calculate this metric.
+
+`measure_hls_bundle_bytes(...)` measures the physical generated media bundle. The same accepted Ubuntu/FFmpeg run produced a **512,981-byte** bundle.
+
+That does **not** mean HLS/fMP4 is the compression mechanism. HLS/fMP4 intentionally adds QR, audio, codec, container, and redundancy overhead. The compression benefit being explored is the compact procedural instruction representation relative to naive repeated/event-expanded representations.
+
+## Output safety and overwrite behavior
+
+Output directories are protected by default.
+
+If an output already exists, choose a new path or explicitly pass:
+
+```bash
+--overwrite
+```
+
+For media compilation, overwrite is transactional: the previous bundle is preserved until a newly built candidate has passed completed-media verification and is ready to publish.
+
+The CLI also rejects dangerous recipe/output and bundle/output path overlaps.
+
+## Troubleshooting
+
+### `ffmpeg executable is required` or `ffprobe executable is required`
+
+Install FFmpeg and make sure both commands are available on your `PATH`:
+
+```bash
+ffmpeg -version
+ffprobe -version
+```
+
+The build also requires H.264, AAC, MP4/fMP4, and HLS capabilities.
+
+### `output directory already exists`
+
+Use a new directory, remove the old output yourself, or explicitly use `--overwrite` if replacement is intended.
+
+### `signature required`
+
+The bundle is unsigned but you used `--require-signature`. Compile a signed bundle or remove that policy flag.
+
+### `trusted public key` / `fingerprint` / `signature` error
+
+A signed bundle requires the expected external trusted public key. Check that:
+
+- the `signature` Python extra is installed;
+- the public key corresponds to the signing private key;
+- you are passing the intended key with `--trusted-public-key`;
+- the bundle has not been changed since it was signed.
+
+### Media verification fails after I edited a generated file
+
+That is expected. Restore the original bundle or recompile it from the source recipe. Generated media bundles are integrity-checked artifacts, not files intended for manual in-place editing.
+
+### I need more diagnostic detail
+
+Add:
+
+```bash
+--log-level DEBUG
+```
+
+CLI failures are emitted as structured JSON on stderr; DEBUG additionally includes the traceback.
+
+## Testing and acceptance
+
+Run the complete Python test suite with:
 
 ```bash
 python -m pytest -q
 ```
 
-The HLS integration GitHub Actions workflow additionally installs FFmpeg and the signature extra, compiles all project modules, builds and verifies a real encoded bundle, runs direct and media simulations with seed 42, compares deterministic reports, and prints procedural-compaction and physical-bundle-size metrics.
+The HLS GitHub Actions acceptance workflow also:
 
-The current acceptance suite includes explicit rejection of a canonical recipe whose simulation-affecting surface configuration is changed after bundle creation.
+- installs real FFmpeg;
+- installs the signature dependency;
+- compiles every project Python module;
+- builds a real media bundle;
+- verifies the completed encoded bundle;
+- runs direct simulation and verified-media simulation with seed 42;
+- byte-compares `cycles.csv` and `surface-final.json`;
+- prints procedural-compaction and physical-bundle-size metrics.
 
-## Project documents
+The media integration that landed on `main` passed **150/150 tests** on the actual pull-request merge ref before merge.
 
-- `docs/specs/2026-09-03-ald-media-controller-design.md` — system design and protocol specification.
-- `docs/superpowers/plans/2026-09-03-ald-core-simulator.md` — core compiler/simulator plan.
-- `docs/superpowers/plans/2026-09-03-ald-media-codecs.md` — QR frame and BFSK codec plan.
-- `docs/superpowers/plans/2026-09-03-ald-hls-integration.md` — HLS/fMP4 packaging, verification, and execution plan.
+## Project status
 
-The repository remains simulation-only throughout these phases. Any future live-machine adapter would require a separate architecture, authentication/authorization model, independent safety analysis, staged hardware-in-the-loop validation, and deployment review rather than being enabled through this simulator path.
+The current `main` line includes:
+
+- deterministic recipe validation and compilation;
+- hardened offline simulated controller execution;
+- deterministic QR instruction encoding;
+- redundant Manchester/BFSK checksum audio;
+- H.264/AAC fMP4/HLS packaging;
+- strict local-only completed-media verification;
+- canonical recipe SHA-256 binding;
+- optional trusted Ed25519 bundle signatures;
+- transactional media publication;
+- direct/media deterministic equivalence checks;
+- bounded procedural-compaction metrics.
+
+It remains **simulation-only**.
+
+## Technical documents
+
+- `docs/specs/2026-09-03-ald-media-controller-design.md` — protocol and system design.
+- `docs/superpowers/plans/2026-09-03-ald-core-simulator.md` — core compiler/simulator implementation plan.
+- `docs/superpowers/plans/2026-09-03-ald-media-codecs.md` — QR and BFSK implementation plan.
+- `docs/superpowers/plans/2026-09-03-ald-hls-integration.md` — HLS/fMP4 packaging, verification, signing, and CLI plan.
+
+## Non-goals
+
+Substitute is not an industrial machine-control stack and should not be treated as one.
+
+This repository does not provide:
+
+- live valve, pump, heater, gas, precursor, or vacuum-system control;
+- PLC or safety-PLC replacement;
+- fieldbus or equipment-network control;
+- vendor safety-interlock bypasses;
+- chemical handling procedures;
+- production process qualification;
+- authorization to operate real deposition equipment.
+
+Any future real-machine adapter would require a separate architecture, explicit authentication/authorization, independent process-safety analysis, vendor/interlock integration, staged hardware-in-the-loop validation, operational procedures, and deployment review. It is intentionally outside the current simulator path.
