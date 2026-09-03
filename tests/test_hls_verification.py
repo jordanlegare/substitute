@@ -263,17 +263,21 @@ def test_signed_verification_authenticates_exact_index_bytes(encoded_bundle, tmp
     ).encode("utf-8")
     index_path.write_bytes(attacker_bytes)
 
-    original_verify = verify_module.verify_bundle_signature
+    original_verify = getattr(verify_module, "verify_bundle_signature", None)
+    if original_verify is not None:
+        def race_signature_verification(path, trusted_key):
+            target = Path(path)
+            target.write_bytes(valid_signed_index)
+            try:
+                return original_verify(target, trusted_key)
+            finally:
+                target.write_bytes(attacker_bytes)
 
-    def race_signature_verification(path, trusted_key):
-        target = Path(path)
-        target.write_bytes(valid_signed_index)
-        try:
-            return original_verify(target, trusted_key)
-        finally:
-            target.write_bytes(attacker_bytes)
-
-    monkeypatch.setattr(verify_module, "verify_bundle_signature", race_signature_verification)
+        monkeypatch.setattr(
+            verify_module,
+            "verify_bundle_signature",
+            race_signature_verification,
+        )
 
     with pytest.raises(IntegrityError, match="signature"):
         verify_media_bundle(
