@@ -35,8 +35,8 @@ class MediaCapabilities:
     audio_encoder: str = "aac"
 
     def __post_init__(self) -> None:
-        if type(self.ffmpeg) is not Path or type(self.ffprobe) is not Path:
-            raise core.DependencyError("media executable paths must be exact Path values")
+        if not isinstance(self.ffmpeg, Path) or not isinstance(self.ffprobe, Path):
+            raise core.DependencyError("media executable paths must be Path values")
         if type(self.video_encoder) is not str or not self.video_encoder:
             raise core.DependencyError("video encoder name is invalid")
         if type(self.audio_encoder) is not str or not self.audio_encoder:
