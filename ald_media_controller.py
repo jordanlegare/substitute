@@ -1,8 +1,8 @@
 """Public ALD media-controller namespace.
 
 The module composes the hardened deterministic core with local media-codec
-interfaces while preserving the existing CLI and monkeypatch-compatible
-module object.
+and staging interfaces while preserving the existing CLI and
+monkeypatch-compatible module object.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import sys
 
 import ald_hardened_core as _core
 import ald_media_codecs as _media
+import ald_media_staging as _staging
 
 
 for _name in (
@@ -38,6 +39,9 @@ for _name in (
     "decode_checksum_audio",
 ):
     setattr(_core, _name, getattr(_media, _name))
+
+for _name in ("PacketMediaArtifact", "stage_packet_media"):
+    setattr(_core, _name, getattr(_staging, _name))
 
 
 if __name__ == "__main__":
