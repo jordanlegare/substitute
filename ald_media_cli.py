@@ -245,16 +245,18 @@ def _run_compile(
         candidate = work_root / "bundle"
         manifest = package_hls(packet_mp4s, candidate, capabilities, _MEDIA_PROFILE)
         playlist = parse_local_playlist(manifest)
+        canonical_recipe_path = candidate / "recipe.canonical.json"
+        _write_recipe_file(recipe, canonical_recipe_path)
         index_path = write_bundle_index(
             compiled,
             playlist,
             _MEDIA_PROFILE,
             candidate / "bundle.json",
+            recipe_path=canonical_recipe_path,
             ffmpeg_version=_ffmpeg_version(capabilities),
             video_encoder=capabilities.video_encoder,
             audio_encoder=capabilities.audio_encoder,
         )
-        _write_recipe_file(recipe, candidate / "recipe.canonical.json")
 
         trusted_key: Path | None = None
         require_signature = False
@@ -276,6 +278,7 @@ def _run_compile(
                 or actual.digest != expected.digest
                 for actual, expected in zip(verified.packets, compiled.packets, strict=True)
             )
+            or verified.recipe_bytes != canonical_recipe_path.read_bytes()
         ):
             raise IntegrityError("completed media does not reproduce the compiled recipe")
 
@@ -317,11 +320,20 @@ def _run_verify(
     return int(core.ExitCode.OK)
 
 
-def _bind_verified_recipe(manifest: Path, verified) -> core.CompiledRecipe:
-    recipe_path = Path(manifest).parent / "recipe.canonical.json"
-    if not recipe_path.is_file():
-        raise IntegrityError("verified media bundle is missing recipe.canonical.json")
-    recipe = core.validate_recipe(core.load_recipe(recipe_path))
+def _bind_verified_recipe(verified) -> core.CompiledRecipe:
+    if type(verified.recipe_bytes) is not bytes or not verified.recipe_bytes:
+        raise IntegrityError("verified media bundle has no canonical recipe bytes")
+    try:
+        temporary_root = tempfile.TemporaryDirectory(prefix="ald-verified-recipe-")
+    except OSError as error:
+        raise IntegrityError(f"unable to create verified-recipe scratch directory: {error}") from error
+    with temporary_root as temporary_name:
+        recipe_path = Path(temporary_name) / "recipe.canonical.json"
+        try:
+            recipe_path.write_bytes(verified.recipe_bytes)
+        except OSError as error:
+            raise IntegrityError(f"unable to stage verified canonical recipe bytes: {error}") from error
+        recipe = core.validate_recipe(core.load_recipe(recipe_path))
     compiled = core.compile_recipe(recipe)
     if len(compiled.packets) != len(verified.packets):
         raise IntegrityError("canonical recipe packet count does not match verified media")
@@ -364,7 +376,7 @@ def _run_simulate_media(
         require_signature=require_signature,
         trusted_public_key=trusted_public_key,
     )
-    compiled = _bind_verified_recipe(manifest, verified)
+    compiled = _bind_verified_recipe(verified)
     _reject_media_output_overlap(manifest, output)
     result = core.SimulatedALDController().execute(compiled, seed)
     core.publish_reports(result, output, overwrite=overwrite)
