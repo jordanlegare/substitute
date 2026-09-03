@@ -1,0 +1,78 @@
+name: HLS integration
+
+on:
+  push:
+    branches:
+      - feat/ald-hls-integration
+  pull_request:
+    branches:
+      - fix/core-hardening-recovery
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Install
+        run: python -m pip install -e '.[test,signature]'
+      - name: Tests
+        run: python -m pytest -q
+      - name: Compile Python modules
+        run: >-
+          python -m py_compile
+          ald_core.py
+          ald_hardened_core.py
+          ald_media_codecs.py
+          ald_media_staging.py
+          ald_compression.py
+          ald_media_controller.py
+          ald_media_cli.py
+          ald_hls_integration.py
+          ald_hls_packaging.py
+          ald_hls_bundle.py
+          ald_hls_signature.py
+          ald_hls_verify.py
+      - name: End-to-end media acceptance
+        run: |
+          rm -rf build/acceptance
+          mkdir -p build/acceptance
+          ald-media-controller compile recipes/generic_al2o3.json --output build/acceptance/bundle
+          ald-media-controller verify build/acceptance/bundle/stream.m3u8
+          ald-media-controller simulate recipes/generic_al2o3.json --seed 42 --output build/acceptance/direct
+          ald-media-controller simulate-media build/acceptance/bundle/stream.m3u8 --seed 42 --output build/acceptance/media
+          cmp build/acceptance/direct/cycles.csv build/acceptance/media/cycles.csv
+          cmp build/acceptance/direct/surface-final.json build/acceptance/media/surface-final.json
+      - name: Size metrics
+        run: |
+          python - <<'PY'
+          from dataclasses import asdict
+          import json
+          from pathlib import Path
+
+          from ald_media_controller import (
+              SimulatedALDController,
+              compile_recipe,
+              load_recipe,
+              measure_hls_bundle_bytes,
+              measure_procedural_compression,
+              validate_recipe,
+          )
+
+          recipe_path = Path("recipes/generic_al2o3.json")
+          compiled = compile_recipe(validate_recipe(load_recipe(recipe_path)))
+          simulation = SimulatedALDController().execute(compiled, seed=42)
+          report = measure_procedural_compression(compiled, simulation)
+          payload = asdict(report)
+          payload["hls_bundle_bytes"] = measure_hls_bundle_bytes(
+              Path("build/acceptance/bundle")
+          )
+          print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+          PY
