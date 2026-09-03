@@ -32,3 +32,4 @@ jobs:
           ald_media_controller.py
           ald_hls_integration.py
           ald_hls_packaging.py
+          ald_hls_bundle.py
