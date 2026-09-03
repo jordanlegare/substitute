@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
+from pathlib import Path
 
 import ald_hardened_core as core
 
@@ -132,3 +134,42 @@ def measure_procedural_compression(
         expanded_cycle_count=expanded_cycle_count,
         estimated_site_event_count=estimated_site_event_count,
     )
+
+
+def measure_hls_bundle_bytes(directory: Path) -> int:
+    """Return the physical byte size of one flat, already-verified HLS bundle.
+
+    This is an informational transport-size measurement, not a compression
+    ratio. Symlinks and non-regular entries are rejected so the measurement
+    never traverses or counts data outside the supplied bundle directory.
+    """
+    root = Path(directory)
+    try:
+        if root.is_symlink():
+            raise core.OutputError("HLS bundle directory must not be a symlink")
+        if not root.is_dir():
+            raise core.OutputError("HLS bundle measurement requires a directory")
+
+        total = 0
+        file_count = 0
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    raise core.OutputError(
+                        f"HLS bundle measurement rejects symlink: {entry.name}"
+                    )
+                if not entry.is_file(follow_symlinks=False):
+                    raise core.OutputError(
+                        f"HLS bundle measurement requires flat regular files: {entry.name}"
+                    )
+                metadata = entry.stat(follow_symlinks=False)
+                total += metadata.st_size
+                file_count += 1
+    except core.OutputError:
+        raise
+    except OSError as error:
+        raise core.OutputError(f"unable to measure HLS bundle bytes: {error}") from error
+
+    if file_count == 0:
+        raise core.OutputError("HLS bundle measurement found no regular files")
+    return total
