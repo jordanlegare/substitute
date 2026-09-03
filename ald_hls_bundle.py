@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 from pathlib import Path, PurePosixPath
@@ -18,6 +19,7 @@ import ald_media_codecs as media
 
 _BUNDLE_PROTOCOL = "ALD-MEDIA/1"
 _TOOL_VERSION = "0.1.0"
+_RECIPE_FILENAME = "recipe.canonical.json"
 _MAP_RE = re.compile(r'^#EXT-X-MAP:URI="([^"]+)"$')
 _DURATION_MIN_SECONDS = 2.95
 _DURATION_MAX_SECONDS = 3.05
@@ -57,6 +59,7 @@ class BundleIndex:
     protocol: str
     manifest: str
     initialization: str
+    recipe: Mapping[str, str]
     packets: tuple[BundlePacket, ...]
     root_hash: bytes
     media_profile: Mapping[str, Any]
@@ -65,6 +68,7 @@ class BundleIndex:
     creation_tool_version: str
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "recipe", MappingProxyType(dict(self.recipe)))
         object.__setattr__(self, "media_profile", MappingProxyType(dict(self.media_profile)))
         object.__setattr__(self, "ffmpeg", MappingProxyType(dict(self.ffmpeg)))
         if self.signature is not None:
@@ -276,17 +280,37 @@ def _require_plain_string(value: str, label: str) -> str:
     return value
 
 
+def _recipe_metadata(recipe_path: Path, root: Path) -> dict[str, str]:
+    source = Path(recipe_path)
+    if source.is_symlink() or not source.is_file():
+        raise MediaVerificationError("canonical recipe must be a real regular file")
+    relative = _relative_bundle_path(source, root, "canonical recipe")
+    if relative != _RECIPE_FILENAME:
+        raise MediaVerificationError(
+            f"canonical recipe must be named {_RECIPE_FILENAME} in the bundle root"
+        )
+    try:
+        recipe_bytes = source.read_bytes()
+    except OSError as error:
+        raise MediaVerificationError(f"unable to read canonical recipe: {error}") from error
+    return {
+        "path": relative,
+        "sha256": hashlib.sha256(recipe_bytes).hexdigest(),
+    }
+
+
 def write_bundle_index(
     compiled_recipe: core.CompiledRecipe,
     playlist: LocalPlaylist,
     profile: media.MediaProfile,
     destination: Path,
     *,
+    recipe_path: Path,
     ffmpeg_version: str,
     video_encoder: str,
     audio_encoder: str,
 ) -> Path:
-    """Write canonical bundle metadata binding ordered media segments to packet digests."""
+    """Write canonical bundle metadata binding media and canonical recipe bytes."""
     if type(compiled_recipe) is not core.CompiledRecipe:
         raise MediaVerificationError("bundle index requires an exact CompiledRecipe")
     if type(playlist) is not LocalPlaylist:
@@ -311,6 +335,7 @@ def write_bundle_index(
     initialization = _relative_bundle_path(
         playlist.initialization_path, root, "initialization segment"
     )
+    recipe = _recipe_metadata(recipe_path, root)
     packets: list[dict[str, Any]] = []
     bundle_packets: list[BundlePacket] = []
     for index, (hashed_packet, segment) in enumerate(
@@ -348,6 +373,7 @@ def write_bundle_index(
         "ffmpeg": ffmpeg,
         "manifest": manifest,
         "initialization": initialization,
+        "recipe": recipe,
         "packets": packets,
         "root_hash": compiled_recipe.root_hash.hex(),
         "signature": None,
@@ -374,6 +400,7 @@ def write_bundle_index(
         protocol=_BUNDLE_PROTOCOL,
         manifest=manifest,
         initialization=initialization,
+        recipe=recipe,
         packets=tuple(bundle_packets),
         root_hash=compiled_recipe.root_hash,
         media_profile=_profile_dict(profile),
