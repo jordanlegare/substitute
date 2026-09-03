@@ -316,9 +316,6 @@ def _validate_encoded_streams(
 
     video = by_type["video"]
     audio = by_type["audio"]
-    format_data = probe.get("format")
-    if type(format_data) is not dict:
-        raise IntegrityError(f"segment {sequence} format metadata is missing")
     try:
         if video.get("codec_name") != "h264":
             raise IntegrityError(f"segment {sequence} video is not H.264")
@@ -330,23 +327,16 @@ def _validate_encoded_streams(
             raise IntegrityError(f"segment {sequence} audio format does not match media profile")
         video_start = float(video.get("start_time"))
         audio_start = float(audio.get("start_time"))
-        format_duration = float(format_data.get("duration"))
+        video_duration = float(video.get("duration"))
+        audio_duration = float(audio.get("duration"))
     except (TypeError, ValueError) as error:
         raise IntegrityError(f"segment {sequence} stream metadata is incomplete") from error
-    if (
-        not math.isfinite(video_start)
-        or not math.isfinite(audio_start)
-        or not math.isfinite(format_duration)
-    ):
+    values = (video_start, audio_start, video_duration, audio_duration)
+    if any(not math.isfinite(value) for value in values):
         raise IntegrityError(f"segment {sequence} stream timestamps are missing or non-finite")
-
-    minimum_start = min(video_start, audio_start)
-    duration_candidates = (format_duration, format_duration - minimum_start)
-    if not any(
-        candidate > 0.0
-        and math.isfinite(candidate)
-        and abs(candidate - profile.interval_seconds) <= _TIMELINE_TOLERANCE_SECONDS
-        for candidate in duration_candidates
+    if (
+        abs(video_duration - profile.interval_seconds) > _TIMELINE_TOLERANCE_SECONDS
+        or abs(audio_duration - profile.interval_seconds) > _TIMELINE_TOLERANCE_SECONDS
     ):
         raise IntegrityError(
             f"segment {sequence} timeline duration does not match expected media interval"
