@@ -6,12 +6,19 @@ import qrcode
 from qrcode.constants import ERROR_CORRECT_Q
 
 from ald_media_controller import (
+    AUDIO_PREAMBLE,
+    AudioDecodeError,
+    AudioRecord,
     DEFAULT_MEDIA_PROFILE,
     FrameDecodeError,
+    build_audio_record,
     compile_recipe,
     decode_instruction_frame,
     decode_qr_payload,
     encode_qr_payload,
+    manchester_decode,
+    manchester_encode,
+    parse_audio_record,
     render_instruction_frame,
     validate_recipe,
 )
@@ -106,9 +113,7 @@ def _make_ambiguous_two_code_frame(items, path):
 
 def test_qr_payload_round_trip(compiled_recipe):
     item = compiled_recipe.packets[0]
-
     decoded = decode_qr_payload(encode_qr_payload(item))
-
     assert decoded.canonical_bytes == item.canonical_bytes
     assert decoded.digest == item.digest
     assert decoded.sequence == item.packet.sequence
@@ -116,14 +121,12 @@ def test_qr_payload_round_trip(compiled_recipe):
 
 def test_qr_payload_rejects_oversized_packet(compiled_recipe):
     item = dataclasses.replace(compiled_recipe.packets[0], canonical_bytes=b"x" * 801)
-
     with pytest.raises(FrameDecodeError, match="800"):
         encode_qr_payload(item)
 
 
 def test_qr_payload_rejects_trailing_bytes(compiled_recipe):
     encoded = encode_qr_payload(compiled_recipe.packets[0])
-
     with pytest.raises(FrameDecodeError, match="length"):
         decode_qr_payload(encoded + b"x")
 
@@ -133,7 +136,6 @@ def test_qr_payload_rejects_noncanonical_packet_bytes(compiled_recipe):
     noncanonical = item.canonical_bytes.replace(b'"arguments":{}', b'"arguments": { }')
     assert noncanonical != item.canonical_bytes
     forged = dataclasses.replace(item, canonical_bytes=noncanonical)
-
     with pytest.raises(FrameDecodeError, match="canonical"):
         decode_qr_payload(encode_qr_payload(forged))
 
@@ -141,9 +143,7 @@ def test_qr_payload_rejects_noncanonical_packet_bytes(compiled_recipe):
 def test_rendered_frame_decodes_exact_packet(compiled_recipe, tmp_path):
     item = compiled_recipe.packets[0]
     path = render_instruction_frame(item, DEFAULT_MEDIA_PROFILE, tmp_path / "frame.png")
-
     decoded = decode_instruction_frame(path, DEFAULT_MEDIA_PROFILE)
-
     assert path.is_file()
     assert Image.open(path).size == (1920, 1080)
     assert decoded.canonical_bytes == item.canonical_bytes
@@ -153,7 +153,6 @@ def test_rendered_frame_decodes_exact_packet(compiled_recipe, tmp_path):
 
 def test_frame_with_two_qr_codes_is_rejected(compiled_recipe, tmp_path):
     path = _make_ambiguous_two_code_frame(compiled_recipe.packets[:2], tmp_path / "ambiguous.png")
-
     with pytest.raises(FrameDecodeError, match="exactly one"):
         decode_instruction_frame(path, DEFAULT_MEDIA_PROFILE)
 
@@ -162,6 +161,44 @@ def test_frame_with_wrong_dimensions_is_rejected(compiled_recipe, tmp_path):
     path = render_instruction_frame(compiled_recipe.packets[0], DEFAULT_MEDIA_PROFILE, tmp_path / "frame.png")
     image = Image.open(path).crop((0, 0, 1280, 720))
     image.save(path, format="PNG")
-
     with pytest.raises(FrameDecodeError, match="dimensions"):
         decode_instruction_frame(path, DEFAULT_MEDIA_PROFILE)
+
+
+def test_audio_record_layout_and_crc():
+    digest = bytes(range(32))
+    record = build_audio_record(0x01020304, digest)
+
+    assert len(record) == 49
+    assert record[:8] == AUDIO_PREAMBLE == b"\xAA" * 8
+    assert record[8] == 1
+    assert record[9:13] == b"\x01\x02\x03\x04"
+    assert parse_audio_record(record) == AudioRecord(1, 0x01020304, digest)
+
+
+def test_audio_record_rejects_crc_corruption():
+    record = bytearray(build_audio_record(7, b"d" * 32))
+    record[20] ^= 0x01
+
+    with pytest.raises(AudioDecodeError, match="CRC"):
+        parse_audio_record(bytes(record))
+
+
+def test_audio_record_rejects_trailing_bytes():
+    record = build_audio_record(7, b"d" * 32)
+
+    with pytest.raises(AudioDecodeError, match="49"):
+        parse_audio_record(record + b"x")
+
+
+def test_manchester_round_trip():
+    data = b"\x00\xA5\xFF"
+    symbols = manchester_encode(data)
+
+    assert len(symbols) == len(data) * 16
+    assert manchester_decode(symbols) == data
+
+
+def test_manchester_rejects_invalid_pair():
+    with pytest.raises(AudioDecodeError, match="Manchester"):
+        manchester_decode([0, 0])
