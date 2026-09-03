@@ -1,9 +1,9 @@
 """Hardened public boundary for the ALD media-controller core.
 
-The previously reviewed phase-one implementation is preserved in
-``_ald_media_controller_base.py``. This module installs the final trust,
-fault-containment, descriptor-lifecycle, and CLI error-mapping corrections
-without duplicating the large deterministic simulator implementation.
+The previously reviewed phase-one implementation lives in ``ald_core.py``.
+This module installs the final trust, fault-containment,
+descriptor-lifecycle, and CLI error-mapping corrections while preserving a
+small public entrypoint for later media-codec integration.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import traceback
 from types import MappingProxyType
 from typing import Any
 
-import _ald_media_controller_base as _base
+import ald_core as _base
 
 
 _ORIGINAL_VALIDATE_RECIPE = _base.validate_recipe
@@ -189,8 +189,6 @@ def _recipe_shape_is_trusted(recipe: Any) -> bool:
                 return False
             if not _normalized_json_is_exact(arguments):
                 return False
-            # Packet-level shape validation is safe now because all arguments
-            # are exact immutable containers/primitives.
             if not _base._is_exact_packet_arguments(opcode, arguments):
                 return False
 
@@ -385,8 +383,6 @@ def _publisher_lock_close(self) -> None:
     if fd < 0:
         return
     self.fd = -1
-    # close(2) itself releases an flock lock; an explicit LOCK_UN creates a
-    # failure point that can strand a live lock before descriptor teardown.
     _base.os.close(fd)
 
 
@@ -522,6 +518,6 @@ _base.main = main
 if __name__ == "__main__":
     raise SystemExit(_base.main())
 
-# Preserve the original module object as the public namespace so monkeypatches
-# in the existing regression suite target the same globals used internally.
+# Preserve the implementation module as the public namespace so existing
+# monkeypatch-based tests target the same globals used internally.
 sys.modules[__name__] = _base
