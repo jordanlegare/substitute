@@ -1,7 +1,7 @@
 """Hardened public boundary for the ALD media-controller core.
 
 The previously reviewed phase-one implementation is preserved in
-``_ald_media_controller_base.py``.  This module installs the final trust,
+``_ald_media_controller_base.py``. This module installs the final trust,
 fault-containment, descriptor-lifecycle, and CLI error-mapping corrections
 without duplicating the large deterministic simulator implementation.
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import stat
 import sys
 import traceback
 from types import MappingProxyType
@@ -28,14 +27,11 @@ _ORIGINAL_SURFACE_POST_INIT = _base.SurfaceConfig.__post_init__
 def _raw_json_is_exact(value: Any) -> bool:
     """Accept only concrete JSON containers and primitive types.
 
-    Public recipe validation is a trust boundary.  User-defined ``dict``,
-    ``list``, ``str``, ``int`` or ``float`` subclasses can override iteration,
-    lookup, comparison or conversion after an earlier validation pass.
+    Finiteness and field semantics remain the original validator's job so its
+    precise error classification/messages are preserved.
     """
-    if value is None or type(value) in (str, bool, int):
+    if value is None or type(value) in (str, bool, int, float):
         return True
-    if type(value) is float:
-        return math.isfinite(value)
     if type(value) is list:
         return all(_raw_json_is_exact(item) for item in value)
     if type(value) is dict:
@@ -43,11 +39,47 @@ def _raw_json_is_exact(value: Any) -> bool:
     return False
 
 
+def _deep_freeze_validated(value: Any) -> Any:
+    """Freeze the exact normalized value shapes emitted by recipe validation."""
+    if type(value) is MappingProxyType:
+        return MappingProxyType({key: _deep_freeze_validated(item) for key, item in value.items()})
+    if type(value) is dict:
+        return MappingProxyType({key: _deep_freeze_validated(item) for key, item in value.items()})
+    if type(value) is tuple:
+        return tuple(_deep_freeze_validated(item) for item in value)
+    if type(value) is list:
+        return tuple(_deep_freeze_validated(item) for item in value)
+    return value
+
+
+def _harden_validated_recipe(recipe):
+    """Remove the one remaining mutable nested recipe container."""
+    instructions = tuple(
+        MappingProxyType(
+            {
+                "opcode": instruction["opcode"],
+                "arguments": _deep_freeze_validated(instruction["arguments"]),
+            }
+        )
+        for instruction in recipe.instructions
+    )
+    return _base.Recipe(
+        protocol=recipe.protocol,
+        recipe_id=recipe.recipe_id,
+        metadata=_deep_freeze_validated(recipe.metadata),
+        precursors=_deep_freeze_validated(recipe.precursors),
+        initial_conditions=_deep_freeze_validated(recipe.initial_conditions),
+        limits=recipe.limits,
+        surface=_deep_freeze_validated(recipe.surface),
+        instructions=instructions,
+    )
+
+
 def validate_recipe(raw):
-    """Validate only an exact, inert JSON object graph."""
+    """Validate only an exact, inert JSON object graph and freeze the result."""
     if type(raw) is not dict or not _raw_json_is_exact(raw):
         raise _base.RecipeError("recipe must contain only plain JSON objects, arrays, and primitives")
-    return _ORIGINAL_VALIDATE_RECIPE(raw)
+    return _harden_validated_recipe(_ORIGINAL_VALIDATE_RECIPE(raw))
 
 
 def _normalized_json_is_exact(value: Any) -> bool:
@@ -96,7 +128,6 @@ def _limits_are_exact(limits: Any) -> bool:
 
 
 def _thaw_normalized(value: Any) -> Any:
-    """Convert an already shape-checked normalized tree back to plain JSON."""
     if type(value) is MappingProxyType:
         return {key: _thaw_normalized(item) for key, item in value.items()}
     if type(value) is tuple:
@@ -121,7 +152,7 @@ def _recipe_shape_is_trusted(recipe: Any) -> bool:
             precursor = recipe.precursors[name]
             if (
                 type(precursor) is not MappingProxyType
-                or tuple(precursor.keys()) != ("label",)
+                or set(precursor.keys()) != {"label"}
                 or type(precursor["label"]) is not str
                 or not precursor["label"]
             ):
@@ -137,7 +168,6 @@ def _recipe_shape_is_trusted(recipe: Any) -> bool:
             or not math.isfinite(temperature)
             or type(pressure) is not float
             or not math.isfinite(pressure)
-            or pressure < 0
         ):
             return False
         if not _limits_are_exact(recipe.limits):
@@ -155,12 +185,15 @@ def _recipe_shape_is_trusted(recipe: Any) -> bool:
                 return False
             opcode = instruction["opcode"]
             arguments = instruction["arguments"]
+            if type(opcode) is not str or type(arguments) is not MappingProxyType:
+                return False
+            if not _normalized_json_is_exact(arguments):
+                return False
+            # Packet-level shape validation is safe now because all arguments
+            # are exact immutable containers/primitives.
             if not _base._is_exact_packet_arguments(opcode, arguments):
                 return False
 
-        # Re-run the public recipe semantics on a plain snapshot.  This catches
-        # forged but type-correct limits, cycle totals, purge intervals and
-        # initial/target envelopes before any controller state is initialized.
         raw = {
             "protocol": recipe.protocol,
             "recipe_id": recipe.recipe_id,
@@ -179,7 +212,7 @@ def _recipe_shape_is_trusted(recipe: Any) -> bool:
             "surface": _thaw_normalized(recipe.surface),
             "instructions": [_thaw_normalized(item) for item in recipe.instructions],
         }
-        normalized = _ORIGINAL_VALIDATE_RECIPE(raw)
+        normalized = _harden_validated_recipe(_ORIGINAL_VALIDATE_RECIPE(raw))
         return (
             normalized.protocol == recipe.protocol
             and normalized.recipe_id == recipe.recipe_id
@@ -246,15 +279,15 @@ def _hardened_verify_compiled_integrity(self, compiled):
 
 
 def _strict_surface_post_init(self) -> None:
-    """Reject attacker-defined numeric/string/container subclasses."""
+    """Reject primitive subclasses while preserving list-to-tuple normalization."""
     if type(self.model_version) is not str or not self.model_version:
         raise _base.SurfaceModelError("model_version must be a non-empty string")
     if type(self.regions) is not int or self.regions <= 0:
         raise _base.SurfaceModelError("regions must be a positive integer")
     if type(self.sites_per_region) is not int or self.sites_per_region <= 0:
         raise _base.SurfaceModelError("sites_per_region must be a positive integer")
-    if type(self.transport_factors) is not tuple:
-        raise _base.SurfaceModelError("transport_factors must be an exact tuple")
+    if type(self.transport_factors) not in (list, tuple):
+        raise _base.SurfaceModelError("transport_factors must be a plain list or tuple")
     if any(type(value) not in (int, float) for value in self.transport_factors):
         raise _base.SurfaceModelError("transport_factors must contain plain numbers")
     for field in (
@@ -312,8 +345,6 @@ def _hardened_handle_fault(self, error) -> None:
     except BaseException as caught:
         shutdown_error = caught
     finally:
-        # These virtual actuator assignments do not depend on recipe values or
-        # interlocks.  They are the simulator's final fail-closed invariant.
         self.chamber.valve_a_open = False
         self.chamber.valve_b_open = False
         self.chamber.inert_purge_open = False
@@ -330,7 +361,6 @@ def _hardened_handle_fault(self, error) -> None:
             details,
         )
     except BaseException:
-        # Audit failure cannot be allowed to reopen the execution boundary.
         pass
 
 
@@ -338,9 +368,6 @@ def _owned_directory_close(self) -> None:
     fd = self.fd
     if fd < 0:
         return
-    # Relinquish ownership *before* close.  Linux may release a descriptor
-    # even when close() reports an error; retaining the number would make a
-    # retry capable of closing an unrelated descriptor that reused it.
     self.fd = -1
     _base.os.close(fd)
 
@@ -358,8 +385,8 @@ def _publisher_lock_close(self) -> None:
     if fd < 0:
         return
     self.fd = -1
-    # Closing the descriptor releases an flock lock.  Do not issue LOCK_UN
-    # first: a failed explicit unlock must never strand a live publisher lock.
+    # close(2) itself releases an flock lock; an explicit LOCK_UN creates a
+    # failure point that can strand a live lock before descriptor teardown.
     _base.os.close(fd)
 
 
@@ -370,14 +397,11 @@ def _finalize_close(resource: Any, *, defer: bool = True) -> bool:
     try:
         resource.close()
     except BaseException:
-        # Hardened owners invalidate their fd before the syscall.  At this
-        # point retrying the integer is unsafe, so cleanup is terminal.
         return getattr(resource, "fd", -1) < 0
     return True
 
 
 def _drain_deferred_closes() -> None:
-    # New hardened owners are never deferred after relinquishing ownership.
     _base._DEFERRED_CLOSES.clear()
 
 
@@ -471,9 +495,6 @@ def main(argv=None) -> int:
     except Exception as error:
         if log_level == "DEBUG":
             traceback.print_exc()
-        # An unexpected implementation error is not evidence of a missing
-        # dependency.  Preserve command-domain semantics; true dependency
-        # failures must raise DependencyError explicitly.
         exit_code = (
             _base.ExitCode.RECIPE
             if arguments.command == "validate"
@@ -484,10 +505,6 @@ def main(argv=None) -> int:
         return _emit_cli_error(error, exit_code)
 
 
-# Install the hardened behavior into the original module namespace.  Existing
-# tests and callers monkeypatch private helpers on ``ald_media_controller``;
-# aliasing the public module to the implementation module preserves that
-# behavior while keeping this recovery delta compact and inspectable.
 _base.validate_recipe = validate_recipe
 _base.SimulatedALDController._start_run = _hardened_start_run
 _base.SimulatedALDController._verify_compiled_integrity = _hardened_verify_compiled_integrity
@@ -505,4 +522,6 @@ _base.main = main
 if __name__ == "__main__":
     raise SystemExit(_base.main())
 
+# Preserve the original module object as the public namespace so monkeypatches
+# in the existing regression suite target the same globals used internally.
 sys.modules[__name__] = _base
