@@ -98,15 +98,13 @@ def _canonical_json(value: Any) -> bytes:
     return text.encode("utf-8")
 
 
-def _load_bundle(path: Path) -> tuple[dict[str, Any], bytes]:
-    source = Path(path)
-    if not source.is_file():
-        raise SignatureError(f"bundle index is not a regular file: {source}")
+def _parse_bundle_bytes(raw: bytes) -> tuple[dict[str, Any], bytes]:
+    if type(raw) is not bytes:
+        raise SignatureError("bundle index bytes must be exact bytes")
     try:
-        raw = source.read_bytes()
         text = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        raise SignatureError(f"unable to read bundle index: {error}") from error
+    except UnicodeDecodeError as error:
+        raise SignatureError("bundle index is not valid UTF-8") from error
     try:
         value = json.loads(
             text,
@@ -122,6 +120,17 @@ def _load_bundle(path: Path) -> tuple[dict[str, Any], bytes]:
     if _canonical_json(value) != raw:
         raise SignatureError("bundle index is not canonical sorted compact JSON")
     return value, raw
+
+
+def _load_bundle(path: Path) -> tuple[dict[str, Any], bytes]:
+    source = Path(path)
+    if not source.is_file():
+        raise SignatureError(f"bundle index is not a regular file: {source}")
+    try:
+        raw = source.read_bytes()
+    except OSError as error:
+        raise SignatureError(f"unable to read bundle index: {error}") from error
+    return _parse_bundle_bytes(raw)
 
 
 def _unsigned_bytes(bundle: dict[str, Any]) -> bytes:
@@ -200,10 +209,11 @@ def sign_bundle_index(index_path: Path, private_key_path: Path) -> BundleSignatu
     return record
 
 
-def verify_bundle_signature(index_path: Path, trusted_public_key: Path) -> SignatureStatus:
-    """Verify a signed canonical bundle index against a caller-supplied Ed25519 key."""
+def _verify_loaded_bundle(
+    bundle: dict[str, Any],
+    trusted_public_key: Path,
+) -> SignatureStatus:
     InvalidSignature, serialization, _, Ed25519PublicKey = _crypto()
-    bundle, _ = _load_bundle(Path(index_path))
     signature = bundle["signature"]
     if signature is None:
         return SignatureStatus.UNSIGNED
@@ -249,3 +259,18 @@ def verify_bundle_signature(index_path: Path, trusted_public_key: Path) -> Signa
     except InvalidSignature as error:
         raise SignatureError("bundle signature verification failed") from error
     return SignatureStatus.VERIFIED
+
+
+def verify_bundle_signature_bytes(
+    bundle_bytes: bytes,
+    trusted_public_key: Path,
+) -> SignatureStatus:
+    """Verify the signature over the exact canonical bundle-index bytes supplied by the caller."""
+    bundle, _ = _parse_bundle_bytes(bundle_bytes)
+    return _verify_loaded_bundle(bundle, trusted_public_key)
+
+
+def verify_bundle_signature(index_path: Path, trusted_public_key: Path) -> SignatureStatus:
+    """Verify a signed canonical bundle index against a caller-supplied Ed25519 key."""
+    bundle, _ = _load_bundle(Path(index_path))
+    return _verify_loaded_bundle(bundle, trusted_public_key)
