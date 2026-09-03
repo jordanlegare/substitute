@@ -1,8 +1,8 @@
 """Public ALD media-controller namespace.
 
 The module composes the hardened deterministic core with local media-codec,
-staging, HLS packaging, bundle-index, signature, and completed-media
-verification interfaces while preserving the existing CLI and
+staging, HLS packaging, bundle-index, signature, completed-media verification,
+and executable-media CLI interfaces while preserving the existing
 monkeypatch-compatible module object.
 """
 
@@ -18,6 +18,7 @@ import ald_hls_packaging as _packaging
 import ald_hls_bundle as _bundle
 import ald_hls_signature as _signature
 import ald_hls_verify as _verify
+import ald_media_cli as _cli
 
 
 for _name in (
@@ -86,6 +87,9 @@ for _name in (
     "verify_media_bundle",
 ):
     setattr(_core, _name, getattr(_verify, _name))
+
+_core.build_parser = _cli.build_parser
+_core.main = _cli.main
 
 
 if __name__ == "__main__":
