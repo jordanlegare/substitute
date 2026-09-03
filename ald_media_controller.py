@@ -32,6 +32,10 @@ for _name in (
     "parse_audio_record",
     "manchester_encode",
     "manchester_decode",
+    "encode_checksum_audio",
+    "write_checksum_wav",
+    "read_checksum_wav",
+    "decode_checksum_audio",
 ):
     setattr(_core, _name, getattr(_media, _name))
 
