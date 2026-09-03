@@ -1,5 +1,7 @@
 import dataclasses
+import hashlib
 
+import numpy as np
 from PIL import Image
 import pytest
 import qrcode
@@ -7,20 +9,25 @@ from qrcode.constants import ERROR_CORRECT_Q
 
 from ald_media_controller import (
     AUDIO_PREAMBLE,
+    AUDIO_RECORD_BYTES,
     AudioDecodeError,
     AudioRecord,
     DEFAULT_MEDIA_PROFILE,
     FrameDecodeError,
     build_audio_record,
     compile_recipe,
+    decode_checksum_audio,
     decode_instruction_frame,
     decode_qr_payload,
+    encode_checksum_audio,
     encode_qr_payload,
     manchester_decode,
     manchester_encode,
     parse_audio_record,
+    read_checksum_wav,
     render_instruction_frame,
     validate_recipe,
+    write_checksum_wav,
 )
 
 
@@ -111,6 +118,18 @@ def _make_ambiguous_two_code_frame(items, path):
     return path
 
 
+def _corrupt_audio_copy(samples, copy_index):
+    profile = DEFAULT_MEDIA_PROFILE
+    samples_per_symbol = profile.sample_rate // profile.symbol_rate
+    guard = profile.sample_rate // 10
+    record_samples = AUDIO_RECORD_BYTES * 8 * 2 * samples_per_symbol
+    start = guard + copy_index * (record_samples + guard)
+    end = start + record_samples
+    corrupted = np.array(samples, dtype=np.float64, copy=True)
+    corrupted[start:end] = 0.0
+    return corrupted
+
+
 def test_qr_payload_round_trip(compiled_recipe):
     item = compiled_recipe.packets[0]
     decoded = decode_qr_payload(encode_qr_payload(item))
@@ -179,14 +198,12 @@ def test_audio_record_layout_and_crc():
 def test_audio_record_rejects_crc_corruption():
     record = bytearray(build_audio_record(7, b"d" * 32))
     record[20] ^= 0x01
-
     with pytest.raises(AudioDecodeError, match="CRC"):
         parse_audio_record(bytes(record))
 
 
 def test_audio_record_rejects_trailing_bytes():
     record = build_audio_record(7, b"d" * 32)
-
     with pytest.raises(AudioDecodeError, match="49"):
         parse_audio_record(record + b"x")
 
@@ -194,7 +211,6 @@ def test_audio_record_rejects_trailing_bytes():
 def test_manchester_round_trip():
     data = b"\x00\xA5\xFF"
     symbols = manchester_encode(data)
-
     assert len(symbols) == len(data) * 16
     assert manchester_decode(symbols) == data
 
@@ -202,3 +218,34 @@ def test_manchester_round_trip():
 def test_manchester_rejects_invalid_pair():
     with pytest.raises(AudioDecodeError, match="Manchester"):
         manchester_decode([0, 0])
+
+
+def test_bfsk_wav_round_trip(tmp_path):
+    digest = hashlib.sha256(b"packet").digest()
+    path = write_checksum_wav(7, digest, DEFAULT_MEDIA_PROFILE, tmp_path / "checksum.wav")
+
+    samples = read_checksum_wav(path, DEFAULT_MEDIA_PROFILE)
+    decoded = decode_checksum_audio(samples, DEFAULT_MEDIA_PROFILE)
+
+    assert len(samples) == 144000
+    assert decoded == AudioRecord(1, 7, digest)
+
+
+def test_bfsk_waveform_is_three_seconds_and_bounded():
+    samples = encode_checksum_audio(7, b"d" * 32, DEFAULT_MEDIA_PROFILE)
+
+    assert samples.dtype == np.float64
+    assert samples.shape == (144000,)
+    assert np.max(np.abs(samples)) <= 0.7000001
+    assert np.max(np.abs(samples)) >= 0.69
+
+
+def test_one_corrupt_copy_still_decodes_but_two_do_not():
+    samples = encode_checksum_audio(7, b"d" * 32, DEFAULT_MEDIA_PROFILE)
+    one_bad = _corrupt_audio_copy(samples, copy_index=0)
+
+    assert decode_checksum_audio(one_bad, DEFAULT_MEDIA_PROFILE).sequence == 7
+
+    two_bad = _corrupt_audio_copy(one_bad, copy_index=1)
+    with pytest.raises(AudioDecodeError, match="two matching"):
+        decode_checksum_audio(two_bad, DEFAULT_MEDIA_PROFILE)
