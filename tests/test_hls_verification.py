@@ -1,5 +1,6 @@
 from copy import deepcopy
 from pathlib import Path
+import hashlib
 import json
 import shutil
 
@@ -222,6 +223,64 @@ def test_signed_index_verifies_with_matching_key(encoded_bundle, tmp_path):
         trusted_public_key=public_path,
     )
     assert result.signature_status is SignatureStatus.VERIFIED
+
+
+@pytest.mark.requires_ffmpeg
+def test_signed_verification_authenticates_exact_index_bytes(encoded_bundle, tmp_path, monkeypatch):
+    manifest = _copy_bundle(encoded_bundle, tmp_path / "signed-index-race")
+    private_path, public_path, _ = _write_test_keys(tmp_path)
+    index_path = manifest.parent / "bundle.json"
+    recipe_path = manifest.parent / "recipe.canonical.json"
+
+    sign_bundle_index(index_path, private_path)
+    valid_signed_index = index_path.read_bytes()
+
+    recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+    recipe["surface"]["sites_per_region"] += 1
+    malicious_recipe = (
+        json.dumps(
+            recipe,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    recipe_path.write_bytes(malicious_recipe)
+
+    attacker_index = json.loads(valid_signed_index.decode("utf-8"))
+    attacker_index["recipe"]["sha256"] = hashlib.sha256(malicious_recipe).hexdigest()
+    attacker_bytes = (
+        json.dumps(
+            attacker_index,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    index_path.write_bytes(attacker_bytes)
+
+    original_verify = verify_module.verify_bundle_signature
+
+    def race_signature_verification(path, trusted_key):
+        target = Path(path)
+        target.write_bytes(valid_signed_index)
+        try:
+            return original_verify(target, trusted_key)
+        finally:
+            target.write_bytes(attacker_bytes)
+
+    monkeypatch.setattr(verify_module, "verify_bundle_signature", race_signature_verification)
+
+    with pytest.raises(IntegrityError, match="signature"):
+        verify_media_bundle(
+            manifest,
+            require_signature=True,
+            trusted_public_key=public_path,
+        )
 
 
 @pytest.mark.requires_ffmpeg
