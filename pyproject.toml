@@ -20,6 +20,22 @@ signature = ["cryptography>=42,<47"]
 [project.scripts]
 ald-media-controller = "ald_media_controller:main"
 
+[tool.setuptools]
+py-modules = [
+  "ald_core",
+  "ald_hardened_core",
+  "ald_media_codecs",
+  "ald_media_staging",
+  "ald_compression",
+  "ald_media_controller",
+  "ald_media_cli",
+  "ald_hls_integration",
+  "ald_hls_packaging",
+  "ald_hls_bundle",
+  "ald_hls_signature",
+  "ald_hls_verify",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
