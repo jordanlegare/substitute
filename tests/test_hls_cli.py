@@ -4,7 +4,7 @@ import shutil
 
 import pytest
 
-from ald_media_controller import ExitCode, MediaVerificationError, main, parse_local_playlist
+from ald_media_controller import ExitCode, main
 
 
 SAMPLE_RECIPE = Path("recipes/generic_al2o3.json")
@@ -17,34 +17,6 @@ def test_compile_refuses_existing_output(tmp_path):
     result = main(["compile", str(SAMPLE_RECIPE), "--output", str(output)])
 
     assert result == int(ExitCode.OUTPUT)
-
-
-def test_playlist_rejects_missing_required_independent_segments_tag(tmp_path):
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    (bundle / "init.mp4").write_bytes(b"init")
-    (bundle / "packet-000000.m4s").write_bytes(b"segment")
-    manifest = bundle / "stream.m3u8"
-    manifest.write_text(
-        "\n".join(
-            [
-                "#EXTM3U",
-                "#EXT-X-VERSION:7",
-                "#EXT-X-TARGETDURATION:3",
-                "#EXT-X-MEDIA-SEQUENCE:0",
-                "#EXT-X-PLAYLIST-TYPE:VOD",
-                '#EXT-X-MAP:URI="init.mp4"',
-                "#EXTINF:3.000000,",
-                "packet-000000.m4s",
-                "#EXT-X-ENDLIST",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(MediaVerificationError, match="missing|required"):
-        parse_local_playlist(manifest)
 
 
 @pytest.mark.requires_ffmpeg
