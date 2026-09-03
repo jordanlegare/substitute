@@ -1,8 +1,10 @@
+from copy import deepcopy
 from pathlib import Path
 import shutil
 
 import pytest
 
+import ald_hls_verify as verify_module
 from ald_media_controller import (
     DEFAULT_MEDIA_PROFILE,
     CompiledRecipe,
@@ -219,3 +221,34 @@ def test_signed_bundle_rejects_wrong_trusted_public_key(encoded_bundle, tmp_path
             require_signature=True,
             trusted_public_key=wrong_public_path,
         )
+
+
+@pytest.mark.requires_ffmpeg
+def test_extra_unindexed_segment_fails_closed(encoded_bundle, tmp_path):
+    manifest = _copy_bundle(encoded_bundle, tmp_path / "extra-segment")
+    shutil.copy2(
+        manifest.parent / "packet-000000.m4s",
+        manifest.parent / "packet-999999.m4s",
+    )
+
+    with pytest.raises(IntegrityError, match="extra|segment set"):
+        verify_media_bundle(manifest)
+
+
+@pytest.mark.requires_ffmpeg
+def test_segment_timeline_drift_fails_closed(encoded_bundle, monkeypatch):
+    _, manifest, _, _ = encoded_bundle
+    original_probe = verify_module.probe_media_json
+
+    def drifted_probe(path, capabilities):
+        probe = deepcopy(original_probe(path, capabilities))
+        if Path(path).name == "segment-000001.mp4":
+            for stream in probe["streams"]:
+                if stream.get("codec_type") in {"video", "audio"}:
+                    stream["start_time"] = "9.000000"
+        return probe
+
+    monkeypatch.setattr(verify_module, "probe_media_json", drifted_probe)
+
+    with pytest.raises(IntegrityError, match="timestamp|timeline"):
+        verify_media_bundle(manifest)
