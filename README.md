@@ -68,6 +68,8 @@ python -m pip install -e '.[test,signature]'
 
 The repository includes `recipes/generic_al2o3.json`, a generic A/B ALD simulation recipe used by the acceptance workflow.
 
+**Writing your own recipe?** Start with the [Recipe Authoring Guide](docs/recipe-authoring.md) for a small runnable recipe, complete field/opcode reference, surface-model defaults, controller ordering, common validation failures, and the full annotated example.
+
 ### 1. Validate the recipe
 
 ```bash
@@ -504,6 +506,7 @@ It remains **simulation-only**.
 
 ## Technical documents
 
+- `docs/recipe-authoring.md` — end-user recipe schema, examples, opcode reference, surface-model defaults, and authoring workflow.
 - `docs/specs/2026-09-03-ald-media-controller-design.md` — protocol and system design.
 - `docs/superpowers/plans/2026-09-03-ald-core-simulator.md` — core compiler/simulator implementation plan.
 - `docs/superpowers/plans/2026-09-03-ald-media-codecs.md` — QR and BFSK implementation plan.
