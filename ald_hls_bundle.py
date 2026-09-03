@@ -127,6 +127,26 @@ def _parse_duration(line: str) -> float:
     return duration
 
 
+def _validate_playlist_segment_set(root: Path, expected_uris: set[str]) -> None:
+    try:
+        actual_uris = {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*.m4s")
+        }
+    except (OSError, ValueError) as error:
+        raise MediaVerificationError(f"unable to enumerate playlist media segments: {error}") from error
+    if actual_uris != expected_uris:
+        extras = sorted(actual_uris - expected_uris)
+        missing = sorted(expected_uris - actual_uris)
+        details: list[str] = []
+        if extras:
+            details.append(f"extra={extras}")
+        if missing:
+            details.append(f"missing={missing}")
+        suffix = "; ".join(details) if details else "mismatch"
+        raise MediaVerificationError(f"playlist media segment set does not match references: {suffix}")
+
+
 def parse_local_playlist(path: Path) -> LocalPlaylist:
     """Parse the intentionally small, local-only HLS VOD subset emitted by this project."""
     source = Path(path).resolve()
@@ -148,6 +168,7 @@ def parse_local_playlist(path: Path) -> LocalPlaylist:
         "#EXT-X-INDEPENDENT-SEGMENTS": "independent segments",
         "#EXT-X-MAP:": "initialization map",
     }
+    required_labels = set(singleton_prefixes.values())
     seen: set[str] = set()
     initialization_path: Path | None = None
     pending_duration: float | None = None
@@ -232,10 +253,16 @@ def parse_local_playlist(path: Path) -> LocalPlaylist:
 
     if pending_duration is not None:
         raise MediaVerificationError("playlist ends before segment URI")
+    missing_required = sorted(required_labels - seen)
+    if missing_required:
+        raise MediaVerificationError(
+            f"playlist is missing required tags: {', '.join(missing_required)}"
+        )
     if initialization_path is None:
         raise MediaVerificationError("playlist initialization map is missing")
     if not segments:
         raise MediaVerificationError("playlist contains no media segments")
+    _validate_playlist_segment_set(source.parent, seen_uris)
 
     return LocalPlaylist(
         path=source,
@@ -395,7 +422,6 @@ def write_bundle_index(
     except OSError as error:
         raise MediaVerificationError(f"unable to write bundle index: {error}") from error
 
-    # Construct once so future consumers can share the same immutable schema contract.
     BundleIndex(
         protocol=_BUNDLE_PROTOCOL,
         manifest=manifest,
