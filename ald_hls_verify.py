@@ -1,9 +1,9 @@
 """Fail-closed verification of completed local ALD HLS/fMP4 bundles.
 
-The verifier never passes the HLS manifest to FFmpeg.  It first parses the
+The verifier never passes the HLS manifest to FFmpeg. It first parses the
 restricted local playlist, resolves every path under one bundle directory,
 then constructs one temporary playable fMP4 from the verified initialization
-segment plus one media fragment.  Executable ``HashedPacket`` values are not
+segment plus one media fragment. Executable ``HashedPacket`` values are not
 constructed until the complete frame/audio/index/hash-chain/root verification
 has succeeded.
 """
@@ -11,7 +11,6 @@ has succeeded.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 import hmac
 import json
 import math
@@ -23,8 +22,14 @@ from typing import Any
 import ald_hardened_core as core
 import ald_media_codecs as media
 from ald_hls_bundle import LocalPlaylist, MediaVerificationError, parse_local_playlist
-from ald_hls_integration import MediaBuildError, MediaCapabilities, probe_media_capabilities, run_media_tool
+from ald_hls_integration import (
+    MediaBuildError,
+    MediaCapabilities,
+    probe_media_capabilities,
+    run_media_tool,
+)
 from ald_hls_packaging import probe_media_json
+from ald_hls_signature import SignatureError, SignatureStatus, verify_bundle_signature
 
 
 _VERIFY_TIMEOUT_SECONDS = 60.0
@@ -65,11 +70,6 @@ class IntegrityError(core.ALDError):
     """Raised when independently encoded bundle records do not all agree."""
 
     exit_code = core.ExitCode.INTEGRITY
-
-
-class SignatureStatus(str, Enum):
-    UNSIGNED = "UNSIGNED"
-    VERIFIED = "VERIFIED"
 
 
 @dataclass(frozen=True)
@@ -141,6 +141,7 @@ def _load_bundle_index(
     playlist: LocalPlaylist,
     *,
     require_signature: bool,
+    trusted_public_key: Path | None,
 ) -> _LoadedIndex:
     index_path = playlist.path.parent / "bundle.json"
     if not index_path.is_file():
@@ -177,8 +178,7 @@ def _load_bundle_index(
         raise IntegrityError("bundle protocol must be ALD-MEDIA/1")
 
     manifest = _require_plain_string(root["manifest"], "bundle manifest")
-    expected_manifest = playlist.path.name
-    if manifest != expected_manifest:
+    if manifest != playlist.path.name:
         raise IntegrityError("bundle manifest does not match verified playlist path")
     try:
         expected_init = playlist.initialization_path.relative_to(playlist.path.parent).as_posix()
@@ -207,9 +207,16 @@ def _load_bundle_index(
             raise IntegrityError("signature required but bundle is unsigned")
         signature_status = SignatureStatus.UNSIGNED
     else:
-        # Task 5 adds trusted-key Ed25519 verification.  Until that gate exists,
-        # a signed object cannot be promoted to executable packets.
-        raise IntegrityError("signed bundle cannot be accepted before signature verification")
+        if trusted_public_key is None:
+            raise IntegrityError("signed bundle requires a trusted public key")
+        try:
+            signature_status = verify_bundle_signature(index_path, trusted_public_key)
+        except core.DependencyError:
+            raise
+        except SignatureError as error:
+            raise IntegrityError(str(error)) from error
+        if signature_status is not SignatureStatus.VERIFIED:
+            raise IntegrityError("signed bundle signature did not verify")
 
     packet_values = root["packets"]
     if type(packet_values) is not list or not packet_values:
@@ -342,7 +349,9 @@ def _extract_encoded_records(
                     ],
                     timeout_seconds=_VERIFY_TIMEOUT_SECONDS,
                 )
-                total_samples = int(round(loaded.profile.sample_rate * loaded.profile.interval_seconds))
+                total_samples = int(
+                    round(loaded.profile.sample_rate * loaded.profile.interval_seconds)
+                )
                 run_media_tool(
                     [
                         str(capabilities.ffmpeg),
@@ -375,9 +384,15 @@ def _extract_encoded_records(
             except core.DependencyError:
                 raise
             except (MediaBuildError, media.FrameDecodeError, media.AudioDecodeError) as error:
-                raise IntegrityError(f"encoded segment {sequence} could not be verified: {error}") from error
+                raise IntegrityError(
+                    f"encoded segment {sequence} could not be verified: {error}"
+                ) from error
 
-            if frame.sequence != sequence or audio.sequence != sequence or index_packet.sequence != sequence:
+            if (
+                frame.sequence != sequence
+                or audio.sequence != sequence
+                or index_packet.sequence != sequence
+            ):
                 raise IntegrityError(f"segment {sequence} frame/audio/index sequence mismatch")
             if not hmac.compare_digest(frame.digest, audio.digest):
                 raise IntegrityError(f"segment {sequence} frame/audio digest mismatch")
@@ -402,7 +417,11 @@ def verify_media_bundle(
         playlist = parse_local_playlist(Path(manifest))
     except MediaVerificationError as error:
         raise IntegrityError(f"playlist verification failed: {error}") from error
-    loaded = _load_bundle_index(playlist, require_signature=require_signature)
+    loaded = _load_bundle_index(
+        playlist,
+        require_signature=require_signature,
+        trusted_public_key=trusted_public_key,
+    )
     capabilities = probe_media_capabilities()
     inert_records = _extract_encoded_records(playlist, loaded, capabilities)
 
@@ -413,20 +432,22 @@ def verify_media_bundle(
             raise IntegrityError("decoded packet sequence is not contiguous and zero-based")
         computed = core.hash_packet(previous, canonical_bytes)
         if not hmac.compare_digest(computed, frame_digest):
-            raise IntegrityError(f"segment {sequence} digest does not match recomputed ALD1 hash chain")
+            raise IntegrityError(
+                f"segment {sequence} digest does not match recomputed ALD1 hash chain"
+            )
         chain.append((canonical_bytes, previous, computed))
         previous = computed
     if not hmac.compare_digest(previous, loaded.root_hash):
         raise IntegrityError("decoded media root hash does not match bundle root hash")
 
-    # Promotion boundary: only after every segment and terminal root pass do we
-    # parse canonical bytes into executable packet objects and build HashedPacket values.
     verified_packets: list[core.HashedPacket] = []
     for canonical_bytes, previous_digest, digest in chain:
         try:
             packet = media._decode_canonical_packet(canonical_bytes)
         except media.FrameDecodeError as error:
-            raise IntegrityError(f"verified canonical packet could not be promoted: {error}") from error
+            raise IntegrityError(
+                f"verified canonical packet could not be promoted: {error}"
+            ) from error
         verified_packets.append(
             core.HashedPacket(
                 packet=packet,
