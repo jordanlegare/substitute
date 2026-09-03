@@ -66,6 +66,24 @@ def test_compile_verify_and_media_simulation_are_equivalent(tmp_path, capsys):
 
 
 @pytest.mark.requires_ffmpeg
+def test_verify_rejects_tampered_canonical_recipe_configuration(tmp_path, capsys):
+    bundle = tmp_path / "bundle"
+
+    assert main(["compile", str(SAMPLE_RECIPE), "--output", str(bundle)]) == int(ExitCode.OK)
+    capsys.readouterr()
+
+    recipe_path = bundle / "recipe.canonical.json"
+    recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+    recipe["surface"]["sites_per_region"] += 1
+    recipe_path.write_text(
+        json.dumps(recipe, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["verify", str(bundle / "stream.m3u8")]) == int(ExitCode.INTEGRITY)
+
+
+@pytest.mark.requires_ffmpeg
 def test_compile_overwrite_replaces_verified_bundle(tmp_path):
     bundle = tmp_path / "bundle"
 
