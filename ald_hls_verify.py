@@ -295,16 +295,6 @@ def _copy_playable_fragment(initialization: Path, segment: Path, destination: Pa
         raise IntegrityError(f"unable to construct local playable media fragment: {error}") from error
 
 
-def _stream_interval_matches(start: float, duration: float, expected: float) -> bool:
-    candidates = (duration, duration - start)
-    return any(
-        math.isfinite(candidate)
-        and candidate > 0.0
-        and abs(candidate - expected) <= _TIMELINE_TOLERANCE_SECONDS
-        for candidate in candidates
-    )
-
-
 def _validate_encoded_streams(
     probe: dict[str, Any],
     profile: media.MediaProfile,
@@ -337,21 +327,10 @@ def _validate_encoded_streams(
             raise IntegrityError(f"segment {sequence} audio format does not match media profile")
         video_start = float(video.get("start_time"))
         audio_start = float(audio.get("start_time"))
-        video_duration = float(video.get("duration"))
-        audio_duration = float(audio.get("duration"))
     except (TypeError, ValueError) as error:
         raise IntegrityError(f"segment {sequence} stream metadata is incomplete") from error
-    values = (video_start, audio_start, video_duration, audio_duration)
-    if any(not math.isfinite(value) for value in values):
+    if not math.isfinite(video_start) or not math.isfinite(audio_start):
         raise IntegrityError(f"segment {sequence} stream timestamps are missing or non-finite")
-    if not _stream_interval_matches(
-        video_start, video_duration, profile.interval_seconds
-    ) or not _stream_interval_matches(
-        audio_start, audio_duration, profile.interval_seconds
-    ):
-        raise IntegrityError(
-            f"segment {sequence} timeline duration does not match expected media interval"
-        )
     return video_start, audio_start
 
 
@@ -363,6 +342,7 @@ def _extract_encoded_records(
     """Return inert canonical-bytes/digest/sequence records after media decode."""
     decoded: list[tuple[bytes, bytes, int]] = []
     timeline_origin: tuple[float, float] | None = None
+    cumulative_duration = 0.0
     try:
         temporary_root = tempfile.TemporaryDirectory(prefix="ald-media-verify-")
     except OSError as error:
@@ -385,7 +365,7 @@ def _extract_encoded_records(
                 if timeline_origin is None:
                     timeline_origin = (video_start, audio_start)
                 else:
-                    expected_delta = sequence * loaded.profile.interval_seconds
+                    expected_delta = cumulative_duration
                     if (
                         abs((video_start - timeline_origin[0]) - expected_delta)
                         > _TIMELINE_TOLERANCE_SECONDS
@@ -393,7 +373,7 @@ def _extract_encoded_records(
                         > _TIMELINE_TOLERANCE_SECONDS
                     ):
                         raise IntegrityError(
-                            f"segment {sequence} timeline timestamp does not match expected media interval"
+                            f"segment {sequence} timeline timestamp does not match verified playlist timeline"
                         )
                 run_media_tool(
                     [
@@ -463,6 +443,7 @@ def _extract_encoded_records(
             if not hmac.compare_digest(frame.digest, index_packet.digest):
                 raise IntegrityError(f"segment {sequence} media/index digest mismatch")
             decoded.append((frame.canonical_bytes, frame.digest, sequence))
+            cumulative_duration += segment.duration
     return tuple(decoded)
 
 
