@@ -30,6 +30,7 @@ jobs:
           ald_media_codecs.py
           ald_media_staging.py
           ald_media_controller.py
+          ald_media_cli.py
           ald_hls_integration.py
           ald_hls_packaging.py
           ald_hls_bundle.py
