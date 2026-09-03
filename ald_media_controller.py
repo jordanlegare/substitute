@@ -13,6 +13,7 @@ import ald_hardened_core as _core
 import ald_media_codecs as _media
 import ald_media_staging as _staging
 import ald_hls_integration as _hls
+import ald_hls_packaging as _packaging
 
 
 for _name in (
@@ -51,6 +52,9 @@ for _name in (
     "run_media_tool",
 ):
     setattr(_core, _name, getattr(_hls, _name))
+
+for _name in ("probe_media_json", "mux_packet_mp4", "package_hls"):
+    setattr(_core, _name, getattr(_packaging, _name))
 
 
 if __name__ == "__main__":
