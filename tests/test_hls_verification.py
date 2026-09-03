@@ -1,5 +1,6 @@
 from copy import deepcopy
 from pathlib import Path
+import json
 import shutil
 
 import pytest
@@ -59,6 +60,23 @@ def compiled_two_packets():
     return CompiledRecipe(recipe=full.recipe, packets=packets, root_hash=packets[-1].digest)
 
 
+def _write_canonical_recipe(directory: Path) -> Path:
+    source = json.loads(Path("recipes/generic_al2o3.json").read_text(encoding="utf-8"))
+    path = directory / "recipe.canonical.json"
+    path.write_text(
+        json.dumps(
+            source,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 @pytest.fixture(scope="module")
 def encoded_bundle(compiled_two_packets, media_capabilities, tmp_path_factory):
     root = tmp_path_factory.mktemp("verified-hls")
@@ -85,11 +103,13 @@ def encoded_bundle(compiled_two_packets, media_capabilities, tmp_path_factory):
         DEFAULT_MEDIA_PROFILE,
     )
     playlist = parse_local_playlist(manifest)
+    recipe_path = _write_canonical_recipe(manifest.parent)
     write_bundle_index(
         compiled_two_packets,
         playlist,
         DEFAULT_MEDIA_PROFILE,
         manifest.parent / "bundle.json",
+        recipe_path=recipe_path,
         ffmpeg_version="test-ffmpeg",
         video_encoder=media_capabilities.video_encoder,
         audio_encoder=media_capabilities.audio_encoder,
@@ -127,6 +147,7 @@ def test_encoded_bundle_recovers_exact_packets(encoded_bundle):
     )
     assert verified.root_hash == expected.root_hash
     assert verified.profile == DEFAULT_MEDIA_PROFILE
+    assert verified.recipe_bytes == (manifest.parent / "recipe.canonical.json").read_bytes()
 
 
 @pytest.mark.requires_ffmpeg
@@ -162,11 +183,13 @@ def test_audio_hash_mismatch_fails_complete_bundle(
         DEFAULT_MEDIA_PROFILE,
     )
     playlist = parse_local_playlist(manifest)
+    recipe_path = _write_canonical_recipe(manifest.parent)
     write_bundle_index(
         expected,
         playlist,
         DEFAULT_MEDIA_PROFILE,
         manifest.parent / "bundle.json",
+        recipe_path=recipe_path,
         ffmpeg_version="test-ffmpeg",
         video_encoder=media_capabilities.video_encoder,
         audio_encoder=media_capabilities.audio_encoder,
