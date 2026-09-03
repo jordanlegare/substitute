@@ -299,7 +299,7 @@ def _validate_encoded_streams(
     probe: dict[str, Any],
     profile: media.MediaProfile,
     sequence: int,
-) -> None:
+) -> tuple[float, float]:
     streams = probe.get("streams")
     if type(streams) is not list or len(streams) != 2:
         raise IntegrityError(f"segment {sequence} must contain exactly one video and one audio stream")
@@ -340,15 +340,6 @@ def _validate_encoded_streams(
     ):
         raise IntegrityError(f"segment {sequence} stream timestamps are missing or non-finite")
 
-    expected_start = sequence * profile.interval_seconds
-    if (
-        abs(video_start - expected_start) > _TIMELINE_TOLERANCE_SECONDS
-        or abs(audio_start - expected_start) > _TIMELINE_TOLERANCE_SECONDS
-    ):
-        raise IntegrityError(
-            f"segment {sequence} timeline timestamp does not match expected media interval"
-        )
-
     minimum_start = min(video_start, audio_start)
     duration_candidates = (format_duration, format_duration - minimum_start)
     if not any(
@@ -360,6 +351,7 @@ def _validate_encoded_streams(
         raise IntegrityError(
             f"segment {sequence} timeline duration does not match expected media interval"
         )
+    return video_start, audio_start
 
 
 def _extract_encoded_records(
@@ -369,6 +361,7 @@ def _extract_encoded_records(
 ) -> tuple[tuple[bytes, bytes, int], ...]:
     """Return inert canonical-bytes/digest/sequence records after media decode."""
     decoded: list[tuple[bytes, bytes, int]] = []
+    timeline_origin: tuple[float, float] | None = None
     try:
         temporary_root = tempfile.TemporaryDirectory(prefix="ald-media-verify-")
     except OSError as error:
@@ -385,7 +378,22 @@ def _extract_encoded_records(
             _copy_playable_fragment(playlist.initialization_path, segment.path, playable)
             try:
                 probe = probe_media_json(playable, capabilities)
-                _validate_encoded_streams(probe, loaded.profile, sequence)
+                video_start, audio_start = _validate_encoded_streams(
+                    probe, loaded.profile, sequence
+                )
+                if timeline_origin is None:
+                    timeline_origin = (video_start, audio_start)
+                else:
+                    expected_delta = sequence * loaded.profile.interval_seconds
+                    if (
+                        abs((video_start - timeline_origin[0]) - expected_delta)
+                        > _TIMELINE_TOLERANCE_SECONDS
+                        or abs((audio_start - timeline_origin[1]) - expected_delta)
+                        > _TIMELINE_TOLERANCE_SECONDS
+                    ):
+                        raise IntegrityError(
+                            f"segment {sequence} timeline timestamp does not match expected media interval"
+                        )
                 run_media_tool(
                     [
                         str(capabilities.ffmpeg),
