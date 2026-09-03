@@ -6,13 +6,21 @@ access and has no industrial-hardware control path.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import hmac
 import json
 import math
+from pathlib import Path
 import struct
+import textwrap
 from typing import Any
+
+from PIL import Image, ImageDraw, ImageFont
+import qrcode
+from qrcode.constants import ERROR_CORRECT_Q
+import zxingcpp
 
 import ald_core as core
 
@@ -179,3 +187,106 @@ def decode_qr_payload(data: bytes) -> DecodedFrameRecord:
     if packet.sequence != sequence:
         raise FrameDecodeError("QR envelope sequence does not match canonical packet")
     return DecodedFrameRecord(sequence=sequence, digest=digest, canonical_bytes=canonical_bytes)
+
+
+def _plain_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_plain_json(item) for item in value]
+    return value
+
+
+def _wrap_pixel_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> list[str]:
+    if max_width <= 0:
+        raise FrameDecodeError("instruction frame has no text area")
+    unit = max(draw.textlength("M", font=font), 1.0)
+    width = max(int(max_width / unit), 1)
+    wrapped = textwrap.wrap(text, width=width, break_long_words=True, break_on_hyphens=False)
+    return wrapped or [""]
+
+
+def render_instruction_frame(item: core.HashedPacket, profile: MediaProfile, destination: Path) -> Path:
+    """Render one deterministic executable instruction PNG."""
+    if type(profile) is not MediaProfile:
+        raise FrameDecodeError("profile must be an exact MediaProfile")
+    _validate_hashed_packet(item)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    qr = qrcode.QRCode(
+        error_correction=ERROR_CORRECT_Q,
+        box_size=profile.qr_box_size,
+        border=profile.qr_border_modules,
+    )
+    qr.add_data(encode_qr_payload(item), optimize=0)
+    try:
+        qr.make(fit=True)
+        symbol = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    except Exception as error:
+        raise FrameDecodeError(f"unable to render QR symbol: {error}") from error
+
+    margin = 32
+    gutter = 48
+    if symbol.width + 2 * margin > profile.width or symbol.height + 2 * margin > profile.height:
+        raise FrameDecodeError("QR symbol exceeds instruction frame bounds")
+    text_x = margin + symbol.width + gutter
+    text_width = profile.width - text_x - margin
+    if text_width <= 0:
+        raise FrameDecodeError("QR symbol leaves no room for instruction text")
+
+    image = Image.new("RGB", (profile.width, profile.height), "white")
+    qr_y = (profile.height - symbol.height) // 2
+    image.paste(symbol, (margin, qr_y))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=24)
+
+    arguments = json.dumps(
+        _plain_json(item.packet.arguments),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    lines = [
+        item.packet.protocol,
+        f"Recipe: {item.packet.recipe_id}",
+        f"Sequence: {item.packet.sequence}",
+        f"Opcode: {item.packet.opcode}",
+        "Arguments:",
+    ]
+    lines.extend(_wrap_pixel_text(draw, arguments, font, text_width))
+    lines.append("Digest:")
+    lines.extend(_wrap_pixel_text(draw, item.digest.hex(), font, text_width))
+    text = "\n".join(lines)
+    bbox = draw.multiline_textbbox((text_x, margin), text, font=font, spacing=8)
+    if bbox[2] > profile.width - margin or bbox[3] > profile.height - margin:
+        raise FrameDecodeError("instruction text exceeds frame bounds")
+    draw.multiline_text((text_x, margin), text, fill="black", font=font, spacing=8)
+
+    try:
+        image.save(destination, format="PNG", optimize=False, compress_level=9)
+    except OSError as error:
+        raise FrameDecodeError(f"unable to write instruction frame: {error}") from error
+    return destination
+
+
+def decode_instruction_frame(path: Path, profile: MediaProfile) -> DecodedFrameRecord:
+    """Decode exactly one raw QR byte payload from a fixed-size instruction frame."""
+    if type(profile) is not MediaProfile:
+        raise FrameDecodeError("profile must be an exact MediaProfile")
+    try:
+        with Image.open(Path(path)) as source:
+            image = source.convert("RGB")
+    except (OSError, ValueError) as error:
+        raise FrameDecodeError(f"unable to read instruction frame: {error}") from error
+    if image.size != (profile.width, profile.height):
+        raise FrameDecodeError("unexpected frame dimensions")
+    try:
+        results = zxingcpp.read_barcodes(image, formats=zxingcpp.BarcodeFormat.QRCode)
+    except Exception as error:
+        raise FrameDecodeError(f"unable to decode QR frame: {error}") from error
+    if len(results) != 1:
+        raise FrameDecodeError(f"expected exactly one QR code, found {len(results)}")
+    raw = bytes(results[0].bytes)
+    return decode_qr_payload(raw)
