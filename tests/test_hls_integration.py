@@ -16,6 +16,7 @@ from ald_media_controller import (
     probe_media_json,
     run_media_tool,
     stage_packet_media,
+    validate_recipe,
 )
 
 
@@ -33,7 +34,7 @@ def media_capabilities():
 
 @pytest.fixture(scope="module")
 def compiled_recipe():
-    return compile_recipe(load_recipe(Path("recipes/generic_al2o3.json")))
+    return compile_recipe(validate_recipe(load_recipe(Path("recipes/generic_al2o3.json"))))
 
 
 @pytest.fixture(scope="module")
