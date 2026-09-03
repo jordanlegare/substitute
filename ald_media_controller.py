@@ -2,8 +2,8 @@
 
 The module composes the hardened deterministic core with local media-codec,
 staging, HLS packaging, bundle-index, signature, completed-media verification,
-and executable-media CLI interfaces while preserving the existing
-monkeypatch-compatible module object.
+compression-analysis, and executable-media CLI interfaces while preserving the
+existing monkeypatch-compatible module object.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import ald_hls_packaging as _packaging
 import ald_hls_bundle as _bundle
 import ald_hls_signature as _signature
 import ald_hls_verify as _verify
+import ald_compression as _compression
 import ald_media_cli as _cli
 
 
@@ -87,6 +88,9 @@ for _name in (
     "verify_media_bundle",
 ):
     setattr(_core, _name, getattr(_verify, _name))
+
+for _name in ("CompressionReport", "measure_procedural_compression"):
+    setattr(_core, _name, getattr(_compression, _name))
 
 _core.build_parser = _cli.build_parser
 _core.main = _cli.main
