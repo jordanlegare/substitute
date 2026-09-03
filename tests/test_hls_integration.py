@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import json
 import shutil
 import subprocess
@@ -313,12 +314,15 @@ def test_bundle_index_records_ordered_digests_and_root(compiled_recipe, tmp_path
     manifest = directory / "stream.m3u8"
     manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
     playlist = parse_local_playlist(manifest)
+    recipe_path = directory / "recipe.canonical.json"
+    recipe_path.write_bytes(b'{"protocol":"ALD-MEDIA/1"}\n')
 
     path = write_bundle_index(
         compiled_recipe,
         playlist,
         DEFAULT_MEDIA_PROFILE,
         directory / "bundle.json",
+        recipe_path=recipe_path,
         ffmpeg_version="ffmpeg-test-1",
         video_encoder="libx264",
         audio_encoder="aac",
@@ -333,6 +337,10 @@ def test_bundle_index_records_ordered_digests_and_root(compiled_recipe, tmp_path
     assert data["root_hash"] == compiled_recipe.root_hash.hex()
     assert data["manifest"] == "stream.m3u8"
     assert data["initialization"] == "init.mp4"
+    assert data["recipe"] == {
+        "path": "recipe.canonical.json",
+        "sha256": hashlib.sha256(recipe_path.read_bytes()).hexdigest(),
+    }
     assert data["ffmpeg"]["version"] == "ffmpeg-test-1"
     assert data["signature"] is None
     assert raw == json.dumps(data, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
