@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
+signature = ["cryptography>=42,<47"]
 
 [project.scripts]
 ald-media-controller = "ald_media_controller:main"
