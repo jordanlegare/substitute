@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import struct
 import zlib
 
@@ -145,6 +146,7 @@ def build_product_slots(
 
     slots: list[bytes] = []
     for sequence, item in enumerate(compiled.packets):
+        media.validate_hashed_packet(item)
         if item.packet.sequence != sequence:
             raise ProductDataError("compiled packet sequence is not contiguous and zero-based")
         pts_ms = sequence * interval_ms
@@ -157,3 +159,27 @@ def build_product_slots(
             )
         )
     return tuple(slots)
+
+
+def write_product_slot_stream(
+    compiled: core.CompiledRecipe,
+    destination: Path,
+    *,
+    interval_ms: int = 3000,
+    include_guard: bool = True,
+) -> Path:
+    """Write staged real slots and, by default, one zero guard slot."""
+    if type(include_guard) is not bool:
+        raise ProductDataError("include_guard must be a boolean")
+    destination = Path(destination)
+    slots = build_product_slots(compiled, interval_ms=interval_ms)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("xb") as stream:
+            for slot in slots:
+                stream.write(slot)
+            if include_guard:
+                stream.write(bytes(DATA_SLOT_BYTES))
+    except OSError as error:
+        raise ProductDataError(f"unable to write product data slot stream: {error}") from error
+    return destination
