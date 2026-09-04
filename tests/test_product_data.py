@@ -146,3 +146,39 @@ def test_product_slot_rejects_truncation_and_trailing_bytes():
         product_data.decode_product_slot(slot[:-1])
     with pytest.raises(core.ALDError):
         product_data.decode_product_slot(slot + b"\x00")
+
+
+def test_product_slot_stream_writes_real_slots_plus_zero_guard(tmp_path):
+    compiled = compiled_recipe()
+    destination = tmp_path / "product-data.bin"
+
+    returned = product_data.write_product_slot_stream(
+        compiled,
+        destination,
+        interval_ms=3000,
+    )
+    raw = returned.read_bytes()
+
+    assert returned == destination
+    assert len(raw) == (len(compiled.packets) + 1) * product_data.DATA_SLOT_BYTES
+    for sequence in range(len(compiled.packets)):
+        start = sequence * product_data.DATA_SLOT_BYTES
+        record = product_data.decode_product_slot(
+            raw[start : start + product_data.DATA_SLOT_BYTES]
+        )
+        assert record.sequence == sequence
+        assert record.pts_ms == sequence * 3000
+    assert raw[-product_data.DATA_SLOT_BYTES :] == bytes(product_data.DATA_SLOT_BYTES)
+
+
+def test_product_slot_stream_can_omit_guard(tmp_path):
+    compiled = compiled_recipe()
+    destination = tmp_path / "product-data-no-guard.bin"
+
+    product_data.write_product_slot_stream(
+        compiled,
+        destination,
+        include_guard=False,
+    )
+
+    assert destination.stat().st_size == len(compiled.packets) * product_data.DATA_SLOT_BYTES
