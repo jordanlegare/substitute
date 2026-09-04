@@ -523,7 +523,7 @@ def verify_media_bundle(
     verified_packets: list[core.HashedPacket] = []
     for canonical_bytes, previous_digest, digest in chain:
         try:
-            packet = media._decode_canonical_packet(canonical_bytes)
+            packet = media.decode_canonical_packet_bytes(canonical_bytes)
         except media.FrameDecodeError as error:
             raise IntegrityError(
                 f"verified canonical packet could not be promoted: {error}"
