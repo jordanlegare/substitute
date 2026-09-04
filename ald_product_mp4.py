@@ -285,6 +285,8 @@ def _stage_probe_data(
             "copy",
             "-bsf:0",
             "setts=pts=N*3000:dts=N*3000:duration=3000:time_base=1/1000",
+            "-mpegts_copyts",
+            "1",
             "-f",
             "mpegts",
             "-y",
