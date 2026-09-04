@@ -34,6 +34,8 @@ py-modules = [
   "ald_hls_bundle",
   "ald_hls_signature",
   "ald_hls_verify",
+  "ald_product_scene",
+  "ald_product_svg",
 ]
 
 [tool.pytest.ini_options]
