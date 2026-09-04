@@ -2,10 +2,13 @@ from pathlib import Path
 import wave
 
 from PIL import Image
+import pytest
 
 import ald_hardened_core as core
+import ald_hls_integration as hls
 import ald_media_codecs as media
 import ald_product_data as product_data
+import ald_product_mp4 as product_mp4
 import ald_product_render as product_render
 
 
@@ -87,3 +90,10 @@ def test_product_track_staging_writes_full_bfsk_wav_and_guarded_data(tmp_path):
         assert record.canonical_bytes == item.canonical_bytes
         assert record.digest == item.digest
     assert raw[-product_data.DATA_SLOT_BYTES :] == bytes(product_data.DATA_SLOT_BYTES)
+
+
+@pytest.mark.requires_ffmpeg
+def test_product_mp4_capability_probe_round_trips_gpmd_data_track():
+    capabilities = hls.probe_media_capabilities()
+
+    product_mp4.probe_product_mp4_capabilities(capabilities)
