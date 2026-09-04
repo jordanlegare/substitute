@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 
 import ald_hardened_core as core
-from ald_product_scene import build_product_scene
+from ald_product_scene import (
+    build_product_document,
+    build_product_scene,
+    canonical_product_json,
+    parse_product_json,
+)
+from ald_product_svg import render_final_svg, render_stack_svg, render_top_svg
 
 
 MAJORANA_RECIPE = Path("recipes/majorana2_public_specs_reference_sim.json")
@@ -50,3 +56,71 @@ def test_generic_recipe_cannot_be_rendered_as_majorana_product():
 
     with pytest.raises(core.RecipeError, match="public_device_reference"):
         build_product_scene(recipe, stage="final")
+
+
+def test_svg_views_are_deterministic_and_structurally_distinct():
+    scene = build_product_scene(majorana_recipe(), stage="final")
+
+    top_a = render_top_svg(scene)
+    top_b = render_top_svg(scene)
+    stack = render_stack_svg(scene)
+    final = render_final_svg(scene)
+
+    assert top_a == top_b
+    assert top_a.startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
+    assert b"H-shaped superconducting island" in top_a
+    assert b"QD1" in top_a and b"QD5" in top_a
+    assert b"InAs0.8Sb0.2" in stack
+    assert b"Pb" in stack
+    assert b"UNSPECIFIED" in stack
+    assert b"physical_fabrication_mapping=false" in final
+    assert top_a != stack
+    assert final != stack
+
+
+def test_product_json_round_trips_canonically():
+    scene = build_product_scene(majorana_recipe(), stage="final")
+    document = build_product_document(
+        scene,
+        recipe_sha256=b"\x11" * 32,
+        root_hash=b"\x22" * 32,
+        view_sha256={
+            "top": "33" * 32,
+            "stack": "44" * 32,
+            "final": "55" * 32,
+        },
+    )
+
+    raw = canonical_product_json(document)
+    parsed = parse_product_json(raw)
+
+    assert raw.endswith(b"\n")
+    assert b'"physical_fabrication_mapping":false' in raw
+    assert b'"packet_root_hash":"' + (b"22" * 32) + b'"' in raw
+    assert parsed.scene == scene
+    assert parsed.recipe_sha256 == b"\x11" * 32
+    assert parsed.root_hash == b"\x22" * 32
+    assert dict(parsed.view_sha256) == {
+        "final": "55" * 32,
+        "stack": "44" * 32,
+        "top": "33" * 32,
+    }
+    assert canonical_product_json(parsed) == raw
+
+
+def test_product_json_rejects_true_fabrication_mapping():
+    scene = build_product_scene(majorana_recipe(), stage="final")
+    document = build_product_document(
+        scene,
+        recipe_sha256=b"\x11" * 32,
+        root_hash=b"\x22" * 32,
+        view_sha256={"top": "33" * 32, "stack": "44" * 32, "final": "55" * 32},
+    )
+    raw = canonical_product_json(document)
+    tampered = raw.replace(
+        b'"physical_fabrication_mapping":false',
+        b'"physical_fabrication_mapping":true',
+    )
+
+    with pytest.raises(core.RecipeError, match="physical_fabrication_mapping"):
+        parse_product_json(tampered)
