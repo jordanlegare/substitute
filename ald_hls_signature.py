@@ -19,7 +19,7 @@ import ald_hardened_core as core
 
 _SIGNATURE_DOMAIN = b"ALD-BUNDLE-SIGNATURE\x00"
 _SIGNATURE_KEYS = frozenset({"algorithm", "public_key_fingerprint", "signature"})
-_BUNDLE_KEYS = frozenset(
+_HLS_BUNDLE_KEYS = frozenset(
     {
         "protocol",
         "media_profile",
@@ -98,7 +98,22 @@ def _canonical_json(value: Any) -> bytes:
     return text.encode("utf-8")
 
 
-def _parse_bundle_bytes(raw: bytes) -> tuple[dict[str, Any], bytes]:
+def _validate_expected_keys(expected_keys: frozenset[str]) -> frozenset[str]:
+    if type(expected_keys) is not frozenset or not expected_keys:
+        raise SignatureError("bundle expected key schema must be a non-empty frozenset")
+    if any(type(key) is not str or not key for key in expected_keys):
+        raise SignatureError("bundle expected key schema contains an invalid field name")
+    if "signature" not in expected_keys:
+        raise SignatureError("bundle expected key schema must contain signature")
+    return expected_keys
+
+
+def _parse_bundle_bytes(
+    raw: bytes,
+    *,
+    expected_keys: frozenset[str] = _HLS_BUNDLE_KEYS,
+) -> tuple[dict[str, Any], bytes]:
+    schema = _validate_expected_keys(expected_keys)
     if type(raw) is not bytes:
         raise SignatureError("bundle index bytes must be exact bytes")
     try:
@@ -115,14 +130,18 @@ def _parse_bundle_bytes(raw: bytes) -> tuple[dict[str, Any], bytes]:
         raise
     except (json.JSONDecodeError, TypeError, ValueError) as error:
         raise SignatureError("bundle index is not valid JSON") from error
-    if type(value) is not dict or set(value) != _BUNDLE_KEYS:
+    if type(value) is not dict or set(value) != schema:
         raise SignatureError("bundle index has unexpected or missing fields")
     if _canonical_json(value) != raw:
         raise SignatureError("bundle index is not canonical sorted compact JSON")
     return value, raw
 
 
-def _load_bundle(path: Path) -> tuple[dict[str, Any], bytes]:
+def _load_bundle(
+    path: Path,
+    *,
+    expected_keys: frozenset[str] = _HLS_BUNDLE_KEYS,
+) -> tuple[dict[str, Any], bytes]:
     source = Path(path)
     if not source.is_file():
         raise SignatureError(f"bundle index is not a regular file: {source}")
@@ -130,7 +149,7 @@ def _load_bundle(path: Path) -> tuple[dict[str, Any], bytes]:
         raw = source.read_bytes()
     except OSError as error:
         raise SignatureError(f"unable to read bundle index: {error}") from error
-    return _parse_bundle_bytes(raw)
+    return _parse_bundle_bytes(raw, expected_keys=expected_keys)
 
 
 def _unsigned_bytes(bundle: dict[str, Any]) -> bytes:
@@ -173,10 +192,15 @@ def _atomic_write(path: Path, content: bytes) -> None:
                 pass
 
 
-def sign_bundle_index(index_path: Path, private_key_path: Path) -> BundleSignature:
+def sign_bundle_index(
+    index_path: Path,
+    private_key_path: Path,
+    *,
+    expected_keys: frozenset[str] = _HLS_BUNDLE_KEYS,
+) -> BundleSignature:
     """Sign one canonical unsigned bundle index with an Ed25519 private key."""
     _, serialization, Ed25519PrivateKey, _ = _crypto()
-    bundle, _ = _load_bundle(Path(index_path))
+    bundle, _ = _load_bundle(Path(index_path), expected_keys=expected_keys)
     if bundle["signature"] is not None:
         raise SignatureError("bundle index is already signed")
 
@@ -264,13 +288,15 @@ def _verify_loaded_bundle(
 def verify_bundle_signature_bytes(
     bundle_bytes: bytes,
     trusted_public_key: Path,
+    *,
+    expected_keys: frozenset[str] = _HLS_BUNDLE_KEYS,
 ) -> SignatureStatus:
     """Verify the signature over the exact canonical bundle-index bytes supplied by the caller."""
-    bundle, _ = _parse_bundle_bytes(bundle_bytes)
+    bundle, _ = _parse_bundle_bytes(bundle_bytes, expected_keys=expected_keys)
     return _verify_loaded_bundle(bundle, trusted_public_key)
 
 
 def verify_bundle_signature(index_path: Path, trusted_public_key: Path) -> SignatureStatus:
-    """Verify a signed canonical bundle index against a caller-supplied Ed25519 key."""
-    bundle, _ = _load_bundle(Path(index_path))
+    """Verify a signed canonical HLS bundle index against a caller-supplied Ed25519 key."""
+    bundle, _ = _load_bundle(Path(index_path), expected_keys=_HLS_BUNDLE_KEYS)
     return _verify_loaded_bundle(bundle, trusted_public_key)
