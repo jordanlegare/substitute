@@ -24,6 +24,7 @@ PRODUCT_STAGES = (
     "simulation-status",
     "final",
 )
+_UNSPECIFIED_TEXT_PREFIXES = ("not publicly specified", "unspecified")
 
 
 @dataclass(frozen=True)
@@ -124,7 +125,11 @@ def _number(value: Any, label: str, *, minimum: float = 0.0) -> float:
 def _optional_string(value: Any, label: str) -> str | None:
     if value is None:
         return None
-    return _string(value, label)
+    text = _string(value, label)
+    normalized = text.strip().casefold()
+    if any(normalized.startswith(prefix) for prefix in _UNSPECIFIED_TEXT_PREFIXES):
+        return None
+    return text
 
 
 def _optional_number(value: Any, label: str) -> float | None:
@@ -262,13 +267,13 @@ def build_product_scene(
         raise core.RecipeError("unsupported product visualization stage")
 
     metadata = _mapping(recipe.metadata, "metadata")
-    simulation_mapping = _mapping(metadata.get("simulation_mapping"), "metadata.simulation_mapping")
-    if simulation_mapping.get("physical_fabrication_mapping") is not False:
-        raise core.RecipeError("product visualization requires physical_fabrication_mapping=false")
     public_reference = _mapping(
         metadata.get("public_device_reference"),
         "metadata.public_device_reference",
     )
+    simulation_mapping = _mapping(metadata.get("simulation_mapping"), "metadata.simulation_mapping")
+    if simulation_mapping.get("physical_fabrication_mapping") is not False:
+        raise core.RecipeError("product visualization requires physical_fabrication_mapping=false")
 
     layers = _build_layers(public_reference)
     gate_layers, quantum_dots = _build_gates_and_dots(public_reference)
