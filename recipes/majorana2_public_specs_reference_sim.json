@@ -71,7 +71,7 @@
         "localization_length_um_greater_than": 1.0,
         "majorana_splitting_resolution_uev_upper_bound": 1.0,
         "z_parity_lifetime_s": {"value": 22.0, "uncertainty": 1.0},
-        "typical_qubit_operation_time_us_approx": 1.0
+        "typical_qubit_operation_timescale": "on the order of microseconds"
       }
     },
     "sources": [
