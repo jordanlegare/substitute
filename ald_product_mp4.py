@@ -379,13 +379,37 @@ def probe_product_mp4_capabilities(capabilities: MediaCapabilities) -> None:
             slot_path.write_bytes(slot_a + slot_b + guard)
 
             _stage_probe_data(capabilities, slot_path, data_ts)
+            staged_probe = _probe_json(data_ts, capabilities, packets_only=True)
+            staged_packets = staged_probe.get("packets")
+            if type(staged_packets) is not list:
+                raise MediaBuildError("staged MPEG-TS ffprobe result is missing data packets")
+            if len(staged_packets) != 3:
+                raise MediaBuildError(
+                    "staged MPEG-TS data packet count mismatch: "
+                    f"expected=3 actual={len(staged_packets)} packets={_packet_summary(staged_packets)}"
+                )
+
             _mux_probe_mp4(capabilities, data_ts, product_path)
-            probe_product_mp4(
-                product_path,
-                capabilities,
-                packet_count=2,
-                interval_seconds=3.0,
-            )
+            try:
+                probe_product_mp4(
+                    product_path,
+                    capabilities,
+                    packet_count=2,
+                    interval_seconds=3.0,
+                )
+            except MediaBuildError as error:
+                final_probe = _probe_json(product_path, capabilities, packets_only=True)
+                final_packets = final_probe.get("packets")
+                final_summary = (
+                    _packet_summary(final_packets)
+                    if type(final_packets) is list
+                    else f"invalid:{type(final_packets).__name__}"
+                )
+                raise MediaBuildError(
+                    f"{error}; staged_ts_packets={_packet_summary(staged_packets)}; "
+                    f"final_mp4_packets={final_summary}"
+                ) from error
+
             extract_product_data(product_path, extracted_path, capabilities)
             extracted = extracted_path.read_bytes()
             if extracted != slot_a + slot_b:
