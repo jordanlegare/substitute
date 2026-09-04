@@ -97,3 +97,49 @@ def test_product_mp4_capability_probe_round_trips_gpmd_data_track():
     capabilities = hls.probe_media_capabilities()
 
     product_mp4.probe_product_mp4_capabilities(capabilities)
+
+
+@pytest.mark.requires_ffmpeg
+def test_majorana_product_mp4_mux_round_trips_authoritative_slots(tmp_path):
+    compiled, simulation = compiled_and_simulation()
+    profile = media.DEFAULT_MEDIA_PROFILE
+    capabilities = hls.probe_media_capabilities()
+    product_mp4.probe_product_mp4_capabilities(capabilities)
+    sources = product_render.stage_product_tracks(
+        compiled,
+        simulation,
+        tmp_path / "tracks",
+        profile,
+    )
+    product_path = product_mp4.mux_product_mp4(
+        sources,
+        tmp_path / "product.mp4",
+        capabilities,
+        profile,
+    )
+
+    probe = product_mp4.probe_product_mp4(
+        product_path,
+        capabilities,
+        packet_count=len(compiled.packets),
+        interval_seconds=profile.interval_seconds,
+    )
+    assert len(probe.data_packets) == len(compiled.packets)
+
+    extracted_path = product_mp4.extract_product_data(
+        product_path,
+        tmp_path / "product-data.bin",
+        capabilities,
+    )
+    raw = extracted_path.read_bytes()
+    assert len(raw) == len(compiled.packets) * product_data.DATA_SLOT_BYTES
+    for sequence, item in enumerate(compiled.packets):
+        start = sequence * product_data.DATA_SLOT_BYTES
+        record = product_data.decode_product_slot(
+            raw[start : start + product_data.DATA_SLOT_BYTES]
+        )
+        assert record.sequence == sequence
+        assert record.pts_ms == sequence * 3000
+        assert record.duration_ms == 3000
+        assert record.canonical_bytes == item.canonical_bytes
+        assert record.digest == item.digest
