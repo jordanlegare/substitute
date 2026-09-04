@@ -116,6 +116,22 @@ def _exact_streams(probe: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
     return by_type["video"], by_type["audio"], by_type["data"]
 
 
+def _packet_summary(packets: list[Any]) -> str:
+    summary: list[dict[str, object]] = []
+    for packet in packets[:8]:
+        if type(packet) is not dict:
+            summary.append({"entry_type": type(packet).__name__})
+            continue
+        summary.append(
+            {
+                "pts_time": packet.get("pts_time"),
+                "duration_time": packet.get("duration_time"),
+                "size": packet.get("size"),
+            }
+        )
+    return json.dumps(summary, sort_keys=True, separators=(",", ":"))
+
+
 def probe_product_mp4(
     path: Path,
     capabilities: MediaCapabilities,
@@ -160,8 +176,13 @@ def probe_product_mp4(
 
     packet_probe = _probe_json(path, capabilities, packets_only=True)
     packets = packet_probe.get("packets")
-    if type(packets) is not list or len(packets) != packet_count:
-        raise MediaBuildError("product MP4 data packet count does not match compiled packet count")
+    if type(packets) is not list:
+        raise MediaBuildError("product MP4 ffprobe result is missing data packets")
+    if len(packets) != packet_count:
+        raise MediaBuildError(
+            "product MP4 data packet count mismatch: "
+            f"expected={packet_count} actual={len(packets)} packets={_packet_summary(packets)}"
+        )
     data_packets: list[ProductDataPacketProbe] = []
     for sequence, packet in enumerate(packets):
         if type(packet) is not dict:
