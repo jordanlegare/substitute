@@ -1,9 +1,9 @@
 """Fail-closed verification for product-MP4 bundles.
 
 Executable packet objects are returned only after the canonical bundle index,
-artifact digests, MP4 data stream, ALD1 hash chain, canonical recipe, and
-product JSON/SVG views agree.  Video pixels are display-only and are never
-used as an instruction source.
+artifact digests, MP4 data stream, ALD1 hash chain, BFSK audio witness,
+canonical recipe, and product JSON/SVG views agree. Video pixels are
+presentation-only and are never used as an instruction source.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ import math
 from pathlib import Path
 import tempfile
 from typing import Any
+
+import numpy as np
 
 import ald_hardened_core as core
 import ald_hls_integration as hls
@@ -268,6 +270,50 @@ def _decode_authoritative_packets(
     return tuple(verified)
 
 
+def _verify_audio_witness(
+    product_path: Path,
+    capabilities: hls.MediaCapabilities,
+    profile: media.MediaProfile,
+    packets: tuple[core.HashedPacket, ...],
+) -> None:
+    samples_per_interval = int(round(profile.sample_rate * profile.interval_seconds))
+    if samples_per_interval != 144_000:
+        raise IntegrityError("product audio witness profile must use exact 3-second 48 kHz intervals")
+    expected_samples = len(packets) * samples_per_interval
+
+    with tempfile.TemporaryDirectory(prefix="ald-product-audio-verify-") as temporary:
+        pcm_path = Path(temporary) / "product-audio.pcm"
+        try:
+            product_mp4.extract_product_audio(product_path, pcm_path, capabilities)
+            raw = pcm_path.read_bytes()
+        except core.DependencyError:
+            raise
+        except (core.ALDError, OSError) as error:
+            raise IntegrityError(f"product audio witness extraction failed: {error}") from error
+
+    if len(raw) != expected_samples * 2:
+        actual_samples = len(raw) // 2 if len(raw) % 2 == 0 else -1
+        raise IntegrityError(
+            "product audio witness sample count mismatch: "
+            f"expected={expected_samples} actual={actual_samples}"
+        )
+    samples = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32767.0
+    if samples.shape != (expected_samples,):
+        raise IntegrityError("product audio witness PCM shape is invalid")
+
+    for sequence, item in enumerate(packets):
+        start = sequence * samples_per_interval
+        interval = samples[start : start + samples_per_interval]
+        try:
+            record = media.decode_checksum_audio(interval, profile)
+        except media.AudioDecodeError as error:
+            raise IntegrityError(f"product audio witness interval {sequence} is invalid: {error}") from error
+        if record.sequence != sequence:
+            raise IntegrityError(f"product audio witness interval {sequence} has wrong sequence")
+        if record.digest != item.digest:
+            raise IntegrityError(f"product audio witness interval {sequence} digest does not match packet")
+
+
 def _canonical_recipe_bytes(raw: bytes) -> None:
     try:
         text = raw.decode("utf-8")
@@ -433,6 +479,7 @@ def verify_product_bundle(
     packets = _decode_authoritative_packets(product_path, capabilities, packet_index)
     if not packets or packets[-1].digest != root_hash:
         raise IntegrityError("product MP4 ALD1 packet root does not match bundle index")
+    _verify_audio_witness(product_path, capabilities, profile, packets)
     compiled = _verify_recipe(recipe_path, recipe_bytes, packets, root_hash)
     _verify_product_document(
         product_bytes,
