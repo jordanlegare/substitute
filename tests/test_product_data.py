@@ -1,4 +1,7 @@
 from pathlib import Path
+import zlib
+
+import pytest
 
 import ald_hardened_core as core
 import ald_media_codecs as media
@@ -6,11 +9,28 @@ import ald_product_data as product_data
 
 
 RECIPE = Path("recipes/majorana2_public_specs_reference_sim.json")
+_HEADER_BYTES = 55
+_SEQUENCE_OFFSET = 5
+_DURATION_OFFSET = 17
+_PAYLOAD_LENGTH_OFFSET = 21
+_DIGEST_OFFSET = 23
+_PAYLOAD_OFFSET = 55
 
 
 def compiled_recipe() -> core.CompiledRecipe:
     recipe = core.validate_recipe(core.load_recipe(RECIPE))
     return core.compile_recipe(recipe)
+
+
+def _with_recomputed_crc(raw: bytearray) -> bytes:
+    payload_length = int.from_bytes(
+        raw[_PAYLOAD_LENGTH_OFFSET : _PAYLOAD_LENGTH_OFFSET + 2], "big"
+    )
+    crc_offset = _HEADER_BYTES + payload_length
+    raw[crc_offset : crc_offset + 4] = (
+        zlib.crc32(raw[:crc_offset]) & 0xFFFFFFFF
+    ).to_bytes(4, "big")
+    return bytes(raw)
 
 
 def test_public_packet_helpers_accept_compiled_packet():
@@ -50,3 +70,79 @@ def test_product_slots_have_contiguous_three_second_timestamps():
         assert record.duration_ms == 3000
         assert record.canonical_bytes == item.canonical_bytes
         assert record.digest == item.digest
+
+
+def test_product_slot_rejects_wrong_magic():
+    raw = bytearray(product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000))
+    raw[0] ^= 0x01
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(bytes(raw))
+
+
+def test_product_slot_rejects_unknown_version():
+    raw = bytearray(product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000))
+    raw[4] = 2
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(bytes(raw))
+
+
+def test_product_slot_rejects_envelope_sequence_mismatch():
+    raw = bytearray(product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000))
+    raw[_SEQUENCE_OFFSET : _SEQUENCE_OFFSET + 4] = (1).to_bytes(4, "big")
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(_with_recomputed_crc(raw))
+
+
+def test_product_slot_rejects_zero_duration():
+    raw = bytearray(product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000))
+    raw[_DURATION_OFFSET : _DURATION_OFFSET + 4] = bytes(4)
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(bytes(raw))
+
+
+def test_product_slot_rejects_oversized_declared_payload():
+    raw = bytearray(product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000))
+    raw[_PAYLOAD_LENGTH_OFFSET : _PAYLOAD_LENGTH_OFFSET + 2] = (801).to_bytes(2, "big")
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(bytes(raw))
+
+
+def test_product_slot_rejects_corrupted_payload():
+    raw = bytearray(product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000))
+    raw[_PAYLOAD_OFFSET] ^= 0x01
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(bytes(raw))
+
+
+def test_product_slot_rejects_corrupted_digest():
+    raw = bytearray(product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000))
+    raw[_DIGEST_OFFSET] ^= 0x01
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(bytes(raw))
+
+
+def test_product_slot_rejects_crc_failure():
+    slot = product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000)
+    raw = bytearray(slot)
+    payload_length = int.from_bytes(
+        raw[_PAYLOAD_LENGTH_OFFSET : _PAYLOAD_LENGTH_OFFSET + 2], "big"
+    )
+    crc_offset = _HEADER_BYTES + payload_length
+    raw[crc_offset] ^= 0x01
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(bytes(raw))
+
+
+def test_product_slot_rejects_nonzero_padding():
+    raw = bytearray(product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000))
+    raw[-1] = 1
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(bytes(raw))
+
+
+def test_product_slot_rejects_truncation_and_trailing_bytes():
+    slot = product_data.encode_product_slot(compiled_recipe().packets[0], pts_ms=0, duration_ms=3000)
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(slot[:-1])
+    with pytest.raises(core.ALDError):
+        product_data.decode_product_slot(slot + b"\x00")
