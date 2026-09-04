@@ -263,6 +263,56 @@ def extract_product_data(
     return target
 
 
+def extract_product_audio(
+    path: Path,
+    destination: Path,
+    capabilities: MediaCapabilities,
+) -> Path:
+    """Decode the MP4 audio witness to raw mono 48 kHz signed 16-bit PCM."""
+    _require_capabilities(capabilities)
+    source = _require_regular_file(path, "product MP4")
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        raise MediaBuildError(f"product audio extraction destination already exists: {target}")
+    try:
+        run_media_tool(
+            [
+                str(capabilities.ffmpeg),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-i",
+                str(source),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-sn",
+                "-dn",
+                "-ac",
+                str(_PRODUCT_CHANNELS),
+                "-ar",
+                str(_PRODUCT_SAMPLE_RATE),
+                "-c:a",
+                "pcm_s16le",
+                "-f",
+                "s16le",
+                "-y",
+                str(target),
+            ],
+            timeout_seconds=_FFMPEG_TIMEOUT_SECONDS,
+        )
+        _require_regular_file(target, "extracted product audio")
+    except BaseException:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return target
+
+
 def _stage_probe_data(
     capabilities: MediaCapabilities,
     slot_path: Path,
