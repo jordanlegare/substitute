@@ -37,6 +37,7 @@ py-modules = [
   "ald_product_scene",
   "ald_product_svg",
   "ald_product_data",
+  "ald_product_render",
 ]
 
 [tool.pytest.ini_options]
