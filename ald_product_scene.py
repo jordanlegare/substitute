@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import json
 import math
+from types import MappingProxyType
 from typing import Any
 
 import ald_hardened_core as core
@@ -25,6 +27,42 @@ PRODUCT_STAGES = (
     "final",
 )
 _UNSPECIFIED_TEXT_PREFIXES = ("not publicly specified", "unspecified")
+_VIEW_KEYS = frozenset({"top", "stack", "final"})
+_PRODUCT_KEYS = frozenset(
+    {
+        "gate_layers",
+        "layers",
+        "packet_root_hash",
+        "physical_fabrication_mapping",
+        "protocol",
+        "quantum_dots",
+        "recipe_id",
+        "recipe_sha256",
+        "reference_status",
+        "reference_target",
+        "scientific_caveat",
+        "simulation_overlay",
+        "stage",
+        "tetron",
+        "unspecified_fields",
+        "views",
+    }
+)
+_LAYER_KEYS = frozenset({"material", "role", "specified", "thickness_nm"})
+_GATE_KEYS = frozenset({"function", "index", "schematic"})
+_DOT_KEYS = frozenset({"index", "label", "schematic", "shared_with_vertical_neighbor"})
+_TETRON_KEYS = frozenset(
+    {
+        "backbone_length_um",
+        "backbone_width_nm",
+        "horizontal_nanowire_length_um",
+        "horizontal_nanowire_width_nm",
+        "horizontal_nanowires",
+        "shape",
+        "target_majorana_zero_modes",
+    }
+)
+_OVERLAY_KEYS = frozenset({"coverage", "defect_fraction", "label", "seed", "thickness_nm"})
 
 
 @dataclass(frozen=True)
@@ -101,9 +139,15 @@ def _mapping(value: Any, label: str) -> Mapping[str, Any]:
     return value
 
 
+def _exact_dict(value: Any, keys: frozenset[str], label: str) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != keys:
+        raise core.RecipeError(f"{label} has unexpected or missing fields")
+    return value
+
+
 def _string(value: Any, label: str) -> str:
-    if type(value) is not str or not value:
-        raise core.RecipeError(f"{label} must be a non-empty string")
+    if type(value) is not str or not value or any(ord(character) < 0x20 for character in value):
+        raise core.RecipeError(f"{label} must be a non-empty plain string")
     return value
 
 
@@ -136,6 +180,24 @@ def _optional_number(value: Any, label: str) -> float | None:
     if value is None:
         return None
     return _number(value, label)
+
+
+def _digest_bytes(value: Any, label: str) -> bytes:
+    if type(value) is not bytes or len(value) != 32:
+        raise core.RecipeError(f"{label} must be exactly 32 bytes")
+    return value
+
+
+def _digest_hex(value: Any, label: str) -> str:
+    if type(value) is not str or len(value) != 64 or value != value.lower():
+        raise core.RecipeError(f"{label} must be 64 lowercase hexadecimal characters")
+    try:
+        decoded = bytes.fromhex(value)
+    except ValueError as error:
+        raise core.RecipeError(f"{label} must be hexadecimal") from error
+    if len(decoded) != 32:
+        raise core.RecipeError(f"{label} must decode to 32 bytes")
+    return value
 
 
 def _layer_from_record(role: str, record: Any) -> ProductLayer:
@@ -301,3 +363,262 @@ def build_product_scene(
         unspecified_fields=tuple(unspecified),
         overlay=overlay,
     )
+
+
+def build_product_document(
+    scene: ProductScene,
+    *,
+    recipe_sha256: bytes,
+    root_hash: bytes,
+    view_sha256: Mapping[str, str],
+) -> ProductDocument:
+    if type(scene) is not ProductScene:
+        raise core.RecipeError("product document requires a ProductScene")
+    recipe_digest = _digest_bytes(recipe_sha256, "product recipe SHA-256")
+    packet_root = _digest_bytes(root_hash, "product packet root hash")
+    if not isinstance(view_sha256, Mapping) or set(view_sha256) != _VIEW_KEYS:
+        raise core.RecipeError("product view digests must contain top, stack, and final")
+    views = {
+        key: _digest_hex(view_sha256[key], f"product {key} SVG SHA-256")
+        for key in sorted(_VIEW_KEYS)
+    }
+    return ProductDocument(
+        scene=scene,
+        recipe_sha256=recipe_digest,
+        root_hash=packet_root,
+        view_sha256=MappingProxyType(views),
+    )
+
+
+def _product_payload(document: ProductDocument) -> dict[str, Any]:
+    scene = document.scene
+    return {
+        "gate_layers": [
+            {"function": item.function, "index": item.index, "schematic": item.schematic}
+            for item in scene.gate_layers
+        ],
+        "layers": [
+            {
+                "material": item.material,
+                "role": item.role,
+                "specified": item.specified,
+                "thickness_nm": item.thickness_nm,
+            }
+            for item in scene.layers
+        ],
+        "packet_root_hash": document.root_hash.hex(),
+        "physical_fabrication_mapping": False,
+        "protocol": SCENE_PROTOCOL,
+        "quantum_dots": [
+            {
+                "index": item.index,
+                "label": item.label,
+                "schematic": item.schematic,
+                "shared_with_vertical_neighbor": item.shared_with_vertical_neighbor,
+            }
+            for item in scene.quantum_dots
+        ],
+        "recipe_id": scene.recipe_id,
+        "recipe_sha256": document.recipe_sha256.hex(),
+        "reference_status": scene.reference_status,
+        "reference_target": scene.reference_target,
+        "scientific_caveat": scene.scientific_caveat,
+        "simulation_overlay": None
+        if scene.overlay is None
+        else {
+            "coverage": scene.overlay.coverage,
+            "defect_fraction": scene.overlay.defect_fraction,
+            "label": scene.overlay.label,
+            "seed": scene.overlay.seed,
+            "thickness_nm": scene.overlay.thickness_nm,
+        },
+        "stage": scene.stage,
+        "tetron": {
+            "backbone_length_um": scene.tetron.backbone_length_um,
+            "backbone_width_nm": scene.tetron.backbone_width_nm,
+            "horizontal_nanowire_length_um": scene.tetron.horizontal_nanowire_length_um,
+            "horizontal_nanowire_width_nm": scene.tetron.horizontal_nanowire_width_nm,
+            "horizontal_nanowires": scene.tetron.horizontal_nanowires,
+            "shape": scene.tetron.shape,
+            "target_majorana_zero_modes": scene.tetron.target_majorana_zero_modes,
+        },
+        "unspecified_fields": list(scene.unspecified_fields),
+        "views": dict(sorted(document.view_sha256.items())),
+    }
+
+
+def canonical_product_json(document: ProductDocument) -> bytes:
+    if type(document) is not ProductDocument:
+        raise core.RecipeError("product JSON requires a ProductDocument")
+    try:
+        text = json.dumps(
+            _product_payload(document),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+    except (TypeError, ValueError) as error:
+        raise core.RecipeError(f"unable to canonicalize product JSON: {error}") from error
+    return text.encode("utf-8")
+
+
+def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if type(key) is not str:
+            raise core.RecipeError("product JSON object key must be a string")
+        if key in value:
+            raise core.RecipeError(f"product JSON contains duplicate key: {key}")
+        value[key] = item
+    return value
+
+
+def _reject_nonfinite_constant(value: str) -> None:
+    raise core.RecipeError(f"product JSON contains non-finite number: {value}")
+
+
+def _parse_layer(value: Any, index: int) -> ProductLayer:
+    raw = _exact_dict(value, _LAYER_KEYS, f"product layer {index}")
+    role = _string(raw["role"], f"product layer {index} role")
+    material = raw["material"]
+    if material is not None:
+        material = _string(material, f"product layer {index} material")
+    thickness = raw["thickness_nm"]
+    if thickness is not None:
+        thickness = _number(thickness, f"product layer {index} thickness")
+    if type(raw["specified"]) is not bool:
+        raise core.RecipeError("product layer specified must be boolean")
+    if raw["specified"] is not (material is not None and thickness is not None):
+        raise core.RecipeError("product layer specified flag does not match source fields")
+    return ProductLayer(role, material, thickness, raw["specified"])
+
+
+def _parse_gate(value: Any, index: int) -> ProductGateLayer:
+    raw = _exact_dict(value, _GATE_KEYS, f"product gate layer {index}")
+    if raw["schematic"] is not True:
+        raise core.RecipeError("product gate layer must remain schematic")
+    return ProductGateLayer(
+        index=_integer(raw["index"], f"product gate layer {index} index", minimum=1),
+        function=_string(raw["function"], f"product gate layer {index} function"),
+        schematic=True,
+    )
+
+
+def _parse_dot(value: Any, index: int) -> ProductQuantumDot:
+    raw = _exact_dict(value, _DOT_KEYS, f"product quantum dot {index}")
+    if raw["schematic"] is not True or type(raw["shared_with_vertical_neighbor"]) is not bool:
+        raise core.RecipeError("product quantum-dot schematic fields are invalid")
+    return ProductQuantumDot(
+        index=_integer(raw["index"], f"product quantum dot {index} index", minimum=1),
+        label=_string(raw["label"], f"product quantum dot {index} label"),
+        shared_with_vertical_neighbor=raw["shared_with_vertical_neighbor"],
+        schematic=True,
+    )
+
+
+def parse_product_json(raw: bytes) -> ProductDocument:
+    if type(raw) is not bytes or not raw:
+        raise core.RecipeError("product JSON must be non-empty exact bytes")
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise core.RecipeError("product JSON is not valid UTF-8") from error
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_pairs,
+            parse_constant=_reject_nonfinite_constant,
+        )
+    except core.RecipeError:
+        raise
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        raise core.RecipeError("product JSON is not valid JSON") from error
+
+    root = _exact_dict(value, _PRODUCT_KEYS, "product JSON")
+    if root["protocol"] != SCENE_PROTOCOL:
+        raise core.RecipeError(f"product JSON protocol must be {SCENE_PROTOCOL}")
+    if root["physical_fabrication_mapping"] is not False:
+        raise core.RecipeError("product JSON physical_fabrication_mapping must be false")
+    stage = _string(root["stage"], "product stage")
+    if stage not in PRODUCT_STAGES:
+        raise core.RecipeError("product JSON stage is unsupported")
+
+    layers_raw = root["layers"]
+    gates_raw = root["gate_layers"]
+    dots_raw = root["quantum_dots"]
+    unspecified_raw = root["unspecified_fields"]
+    if type(layers_raw) is not list or not layers_raw:
+        raise core.RecipeError("product JSON layers must be a non-empty array")
+    if type(gates_raw) is not list or not gates_raw:
+        raise core.RecipeError("product JSON gate_layers must be a non-empty array")
+    if type(dots_raw) is not list or not dots_raw:
+        raise core.RecipeError("product JSON quantum_dots must be a non-empty array")
+    if type(unspecified_raw) is not list or any(type(item) is not str for item in unspecified_raw):
+        raise core.RecipeError("product JSON unspecified_fields must be a string array")
+
+    tetron_raw = _exact_dict(root["tetron"], _TETRON_KEYS, "product tetron")
+    tetron = ProductTetron(
+        shape=_string(tetron_raw["shape"], "product tetron shape"),
+        horizontal_nanowires=_integer(
+            tetron_raw["horizontal_nanowires"], "product tetron horizontal_nanowires", minimum=1
+        ),
+        horizontal_nanowire_length_um=_number(
+            tetron_raw["horizontal_nanowire_length_um"], "product tetron horizontal_nanowire_length_um"
+        ),
+        horizontal_nanowire_width_nm=_number(
+            tetron_raw["horizontal_nanowire_width_nm"], "product tetron horizontal_nanowire_width_nm"
+        ),
+        backbone_length_um=_number(tetron_raw["backbone_length_um"], "product tetron backbone_length_um"),
+        backbone_width_nm=_number(tetron_raw["backbone_width_nm"], "product tetron backbone_width_nm"),
+        target_majorana_zero_modes=_integer(
+            tetron_raw["target_majorana_zero_modes"], "product tetron target_majorana_zero_modes", minimum=1
+        ),
+    )
+
+    overlay_raw = root["simulation_overlay"]
+    overlay: SimulationOverlay | None
+    if overlay_raw is None:
+        overlay = None
+    else:
+        overlay_value = _exact_dict(overlay_raw, _OVERLAY_KEYS, "product simulation overlay")
+        overlay = SimulationOverlay(
+            seed=_integer(overlay_value["seed"], "product simulation seed"),
+            coverage=_number(overlay_value["coverage"], "product simulation coverage"),
+            thickness_nm=_number(overlay_value["thickness_nm"], "product simulation thickness"),
+            defect_fraction=_number(overlay_value["defect_fraction"], "product simulation defect fraction"),
+            label=_string(overlay_value["label"], "product simulation label"),
+        )
+
+    views_raw = _exact_dict(root["views"], _VIEW_KEYS, "product view digests")
+    views = {
+        key: _digest_hex(views_raw[key], f"product {key} SVG SHA-256")
+        for key in sorted(_VIEW_KEYS)
+    }
+    recipe_digest_hex = _digest_hex(root["recipe_sha256"], "product recipe SHA-256")
+    root_digest_hex = _digest_hex(root["packet_root_hash"], "product packet root hash")
+
+    scene = ProductScene(
+        protocol=SCENE_PROTOCOL,
+        recipe_id=_string(root["recipe_id"], "product recipe_id"),
+        reference_target=_string(root["reference_target"], "product reference_target"),
+        reference_status=_string(root["reference_status"], "product reference_status"),
+        scientific_caveat=_string(root["scientific_caveat"], "product scientific_caveat"),
+        physical_fabrication_mapping=False,
+        stage=stage,
+        layers=tuple(_parse_layer(item, index) for index, item in enumerate(layers_raw)),
+        tetron=tetron,
+        gate_layers=tuple(_parse_gate(item, index) for index, item in enumerate(gates_raw)),
+        quantum_dots=tuple(_parse_dot(item, index) for index, item in enumerate(dots_raw)),
+        unspecified_fields=tuple(unspecified_raw),
+        overlay=overlay,
+    )
+    document = ProductDocument(
+        scene=scene,
+        recipe_sha256=bytes.fromhex(recipe_digest_hex),
+        root_hash=bytes.fromhex(root_digest_hex),
+        view_sha256=MappingProxyType(views),
+    )
+    if canonical_product_json(document) != raw:
+        raise core.RecipeError("product JSON is not canonical sorted compact JSON")
+    return document
