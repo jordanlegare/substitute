@@ -4,9 +4,9 @@
 
 **Goal:** Add a verified `product.mp4` mode that renders a recognizable Majorana 2 public-reference product view, carries the existing canonical ALD packet stream in a synchronized MP4 `bin_data/gpmd` track, preserves BFSK checksum audio, and leaves the existing QR/HLS mode unchanged.
 
-**Architecture:** Keep the canonical recipe compiler, ALD1 hash chain, simulator, BFSK codec, transactional publication, and verification boundary as the shared trust core. Add deterministic product-scene/SVG/raster modules, a fixed 1024-byte binary packet-slot protocol, an FFmpeg data-track bridge that timestamps raw slots with `setts`, stages them through MPEG-TS as `bin_data`, then remuxes them into the final MP4 as `gpmd`, plus a product-specific manifest/verifier that returns the same `HashedPacket` objects consumed by the simulator.
+**Architecture:** Reuse the canonical recipe compiler, ALD1 hash chain, simulator, BFSK codec, local FFmpeg boundary, transactional publication, and simulator packet interface. Add deterministic product scene/SVG/raster modules, a fixed 1024-byte timed binary packet-slot protocol, an FFmpeg bridge that timestamps raw slots with `setts`, stages them through MPEG-TS as `bin_data`, remuxes them into the final MP4 as `gpmd`, and a product-specific manifest/verifier that returns the same `HashedPacket` objects used by direct and QR-media simulation.
 
-**Tech Stack:** Python 3.10+, stdlib `dataclasses`/`hashlib`/`json`/`struct`/`wave`/`zlib`, NumPy, Pillow, existing QR/BFSK codec module, FFmpeg/ffprobe, pytest, optional `cryptography` Ed25519 support.
+**Tech Stack:** Python 3.10+, stdlib `dataclasses`/`hashlib`/`json`/`struct`/`wave`/`zlib`, NumPy, Pillow, existing Manchester/BFSK codecs, FFmpeg/ffprobe, pytest, optional `cryptography` Ed25519 support.
 
 **Spec:** `docs/specs/2026-09-04-majorana2-product-mp4-design.md`
 
@@ -20,48 +20,44 @@
 - Existing Manchester/BFSK audio remains an independent synchronized sequence/hash witness.
 - Canonical packet bytes and the ALD1 chained SHA-256 root remain byte-identical across direct, QR-media, and product-MP4 modes.
 - Product compilation remains local-only and transactional; no network or live industrial hardware/control path is introduced.
-- Python floor remains 3.10; current dependency bounds in `pyproject.toml` remain unchanged unless a task explicitly says otherwise.
-- Use the fixed existing media dimensions/audio profile: 1920x1080, 3.0-second packet intervals, mono 48 kHz BFSK audio, 1200 symbols/s, 1200/2400 Hz carriers, three copies with two required matches.
+- Python floor remains 3.10 and current dependency bounds remain unchanged.
+- Reuse the fixed existing media profile: 1920x1080, 3.0-second packet intervals, mono 48 kHz audio, 1200 symbols/s, 1200/2400 Hz carriers, three BFSK copies with two required matches.
 - Product data slots are exactly 1024 bytes; canonical packet payloads remain bounded to 800 bytes.
 - Product bundle protocol is `ALD-PRODUCT/1`; scene protocol is `ALD-PRODUCT-SCENE/1`; product data version is 1.
 
----
-
 ## File Structure
 
-Create these focused modules:
+Create:
 
-- `ald_product_scene.py` — strict extraction of public-reference metadata, immutable scene model, stage selection, canonical `product.json` payload construction.
-- `ald_product_svg.py` — deterministic top/stack/final SVG serialization from the scene model.
-- `ald_product_data.py` — 1024-byte timed packet-slot codec and stream writer/parser.
-- `ald_product_render.py` — Pillow raster frames and concatenated BFSK checksum WAV for product intervals.
-- `ald_product_mp4.py` — FFmpeg capability proof, raw-data -> MPEG-TS `bin_data` staging, final H.264/AAC/gpmd MP4 muxing, ffprobe helpers.
-- `ald_product_bundle.py` — canonical `bundle.json` construction and artifact digest binding.
-- `ald_product_verify.py` — strict product manifest/artifact/stream/timestamp/data/audio/hash/signature verification.
-
-Create these tests:
-
+- `ald_product_scene.py` — strict public-reference extraction, immutable scene/document model, canonical `product.json` parser/serializer.
+- `ald_product_svg.py` — deterministic top/stack/final SVG serialization.
+- `ald_product_data.py` — fixed 1024-byte timed packet-slot codec.
+- `ald_product_render.py` — deterministic Pillow frames and concatenated BFSK WAV.
+- `ald_product_mp4.py` — FFmpeg capability proof, MPEG-TS `bin_data` staging, final MP4 mux/probe/demux helpers.
+- `ald_product_bundle.py` — canonical product `bundle.json` writer and artifact digests.
+- `ald_product_verify.py` — fail-closed product bundle verification.
 - `tests/test_product_scene.py`
 - `tests/test_product_data.py`
 - `tests/test_product_mp4.py`
 - `tests/test_product_verification.py`
 - `tests/test_product_cli.py`
+- `.github/workflows/product-mp4.yml`
 
-Modify only the existing integration surfaces that need product-mode awareness:
+Modify:
 
-- `ald_media_codecs.py` — expose the existing canonical packet-byte parser publicly so QR and product data share one parser.
-- `ald_hls_signature.py` — make bundle-key schema an optional argument while keeping the existing HLS schema as the default.
-- `ald_media_cli.py` — add `compile-product`, `verify-product`, and `simulate-product` orchestration.
-- `ald_media_controller.py` — re-export product public APIs only if the controller facade currently re-exports sibling media APIs.
+- `ald_media_codecs.py` — expose canonical packet-byte parsing and hashed-packet validation for reuse.
+- `ald_hls_signature.py` — allow an explicit expected bundle-key schema while preserving the HLS schema default.
+- `ald_media_cli.py` — add explicit product commands and orchestration.
+- `ald_media_controller.py` — re-export product APIs through the existing facade pattern.
 - `pyproject.toml` — package all new flat modules.
-- `.github/workflows/product-mp4.yml` — dedicated FFmpeg-backed product acceptance gate.
-- `README.md` and `docs/majorana2-public-spec-reference.md` — user commands, artifact contract, mode comparison, scientific/safety caveats.
+- `README.md`
+- `docs/majorana2-public-spec-reference.md`
 
-Do not restructure `ald_core.py`, `ald_hardened_core.py`, or the existing HLS packaging/verifier unless a failing compatibility test demonstrates a product-mode dependency that cannot live behind the new modules.
+Do not restructure `ald_core.py`, `ald_hardened_core.py`, existing HLS packaging, or existing HLS verification.
 
 ---
 
-### Task 1: Deterministic Majorana 2 Product Scene, JSON, and SVG Views
+### Task 1: Deterministic Product Scene, Product JSON, and SVG Views
 
 **Files:**
 - Create: `ald_product_scene.py`
@@ -70,42 +66,47 @@ Do not restructure `ald_core.py`, `ald_hardened_core.py`, or the existing HLS pa
 - Modify: `pyproject.toml`
 
 **Interfaces:**
-- Consumes: validated `ald_core.Recipe`; optional `ald_core.SimulationResult` used only for explicitly labeled synthetic status overlays.
+
+- Consumes: validated `core.Recipe`; optional successful `core.SimulationResult` for explicitly labeled synthetic overlays.
 - Produces:
-  - `ProductScene`
   - `ProductLayer`
   - `ProductTetron`
   - `ProductGateLayer`
   - `ProductQuantumDot`
   - `SimulationOverlay`
+  - `ProductScene`
+  - `ProductDocument`
   - `build_product_scene(recipe: core.Recipe, *, stage: str, simulation: core.SimulationResult | None = None) -> ProductScene`
-  - `canonical_product_json(scene: ProductScene, *, recipe_sha256: bytes, root_hash: bytes, view_sha256: Mapping[str, str]) -> bytes`
+  - `build_product_document(scene: ProductScene, *, recipe_sha256: bytes, root_hash: bytes, view_sha256: Mapping[str, str]) -> ProductDocument`
+  - `canonical_product_json(document: ProductDocument) -> bytes`
+  - `parse_product_json(raw: bytes) -> ProductDocument`
   - `render_top_svg(scene: ProductScene) -> bytes`
   - `render_stack_svg(scene: ProductScene) -> bytes`
   - `render_final_svg(scene: ProductScene) -> bytes`
   - `write_product_svgs(scene: ProductScene, root: Path) -> Mapping[str, Path]`
 
-- [ ] **Step 1: Write the public-reference extraction tests**
+- [ ] **Step 1: Write RED public-reference extraction tests**
 
-Create `tests/test_product_scene.py` with a helper that loads the checked-in Majorana 2 reference recipe and tests the exact fields the renderer is allowed to use:
+Create `tests/test_product_scene.py`:
 
 ```python
 from pathlib import Path
+
+import pytest
 
 import ald_hardened_core as core
 from ald_product_scene import build_product_scene
 
 
-RECIPE = Path("recipes/majorana2_public_specs_reference_sim.json")
+MAJORANA_RECIPE = Path("recipes/majorana2_public_specs_reference_sim.json")
 
 
 def majorana_recipe() -> core.Recipe:
-    return core.validate_recipe(core.load_recipe(RECIPE))
+    return core.validate_recipe(core.load_recipe(MAJORANA_RECIPE))
 
 
 def test_majorana_scene_preserves_reference_geometry_without_fabrication_mapping():
     scene = build_product_scene(majorana_recipe(), stage="final")
-
     assert scene.protocol == "ALD-PRODUCT-SCENE/1"
     assert scene.physical_fabrication_mapping is False
     assert scene.tetron.shape == "H-shaped superconducting island"
@@ -116,12 +117,12 @@ def test_majorana_scene_preserves_reference_geometry_without_fabrication_mapping
     assert scene.tetron.backbone_width_nm == 20.0
     assert len(scene.gate_layers) == 3
     assert len(scene.quantum_dots) == 5
+    assert sum(dot.shared_with_vertical_neighbor for dot in scene.quantum_dots) == 3
 
 
 def test_majorana_scene_keeps_unknown_stack_fields_unspecified():
     scene = build_product_scene(majorana_recipe(), stage="reference-stack")
     layers = {layer.role: layer for layer in scene.layers}
-
     assert layers["substrate"].material == "GaSb"
     assert layers["substrate"].thickness_nm is None
     assert layers["bottom_barrier"].material is None
@@ -132,21 +133,15 @@ def test_majorana_scene_keeps_unknown_stack_fields_unspecified():
     assert layers["quantum_well_inassb"].thickness_nm == 2.0
     assert layers["superconductor"].material == "Pb"
     assert layers["superconductor"].thickness_nm == 10.0
-```
-
-Add a rejection test proving that a recipe with missing public-reference metadata cannot silently fall back to guessed geometry:
-
-```python
-import pytest
 
 
-def test_product_scene_rejects_recipe_without_public_device_reference():
-    recipe = core.validate_recipe(core.load_recipe(Path("recipes/generic_al2o3.json")))
+def test_product_scene_rejects_recipe_without_public_reference_metadata():
+    generic = core.validate_recipe(core.load_recipe(Path("recipes/generic_al2o3.json")))
     with pytest.raises(core.RecipeError, match="public_device_reference"):
-        build_product_scene(recipe, stage="final")
+        build_product_scene(generic, stage="final")
 ```
 
-- [ ] **Step 2: Run the scene tests and verify RED**
+- [ ] **Step 2: Run the new test and confirm RED**
 
 Run:
 
@@ -154,20 +149,19 @@ Run:
 python -m pytest -q tests/test_product_scene.py
 ```
 
-Expected: collection/import failure because `ald_product_scene` does not exist.
+Expected: import failure for `ald_product_scene`.
 
-- [ ] **Step 3: Implement the immutable scene model and strict metadata extraction**
+- [ ] **Step 3: Implement immutable scene/document types and strict extraction**
 
-In `ald_product_scene.py`, define exact scene types and fixed stage names:
+In `ald_product_scene.py` define:
 
 ```python
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-import hashlib
 import json
-from typing import Any
+from types import MappingProxyType
 
 import ald_hardened_core as core
 
@@ -241,44 +235,41 @@ class ProductScene:
     quantum_dots: tuple[ProductQuantumDot, ...]
     unspecified_fields: tuple[str, ...]
     overlay: SimulationOverlay | None
+
+
+@dataclass(frozen=True)
+class ProductDocument:
+    scene: ProductScene
+    recipe_sha256: bytes
+    root_hash: bytes
+    view_sha256: Mapping[str, str]
 ```
 
-Implement `build_product_scene()` so it reads only `recipe.metadata["public_device_reference"]` and the existing source/status/caveat metadata. Require `physical_fabrication_mapping` to be exact `False`; if it is absent or true, raise `core.RecipeError`.
+`build_product_scene()` must require exact `False` at `recipe.metadata["simulation_mapping"]["physical_fabrication_mapping"]`. Read the public device values only from `recipe.metadata["public_device_reference"]`.
 
-Build the stack in this fixed semantic order:
+Build the layer sequence as:
 
 ```python
 (
     ProductLayer("substrate", "GaSb", None, False),
-    ProductLayer("buffer", buffer_material_or_none, None, buffer_material_or_none is not None),
-    ProductLayer("bottom_barrier", bottom_material_or_none, bottom_thickness_or_none, both_known),
+    ProductLayer("buffer", None, None, False),
+    ProductLayer("bottom_barrier", None, None, False),
     ProductLayer("quantum_well_inas", "InAs", 6.0, True),
     ProductLayer("quantum_well_inassb", "InAs0.8Sb0.2", 2.0, True),
-    ProductLayer("top_barrier", top_material_or_none, top_thickness_or_none, both_known),
+    ProductLayer("top_barrier", None, None, False),
     ProductLayer("superconductor", "Pb", 10.0, True),
 )
 ```
 
-Do not infer a substrate thickness. Do not convert the public layer dimensions into process parameters.
+If future source metadata supplies a buffer/barrier composition or thickness, preserve that source value; never derive it from adjacent layers.
 
-Construct five quantum-dot objects as schematic identities, not physical coordinates. Mark exactly three as `shared_with_vertical_neighbor=True`, matching the public reference count. The renderer may choose normalized display positions later, but the model must not store invented physical positions.
+Construct three gate layers directly from the public `functions` list. Construct QD1-QD5 as schematic identities only; do not store invented physical coordinates. Mark exactly three QDs as shared with vertical neighbors.
 
-When a `SimulationResult` is supplied, permit an overlay only for `simulation-status` and `final`. Build it from the final result fields:
+For stages `simulation-status` and `final`, a supplied simulation must be successful, `simulation.seed` must be an exact `int`, and the overlay uses final `coverage`, `thickness_nm`, and `defect_fraction`. No other scene fields are derived from simulator state.
 
-```python
-SimulationOverlay(
-    seed=simulation.seed,
-    coverage=simulation.surface.coverage,
-    thickness_nm=simulation.surface.thickness_nm,
-    defect_fraction=simulation.surface.defect_fraction,
-)
-```
+- [ ] **Step 4: Write deterministic SVG tests**
 
-Reject a faulted simulation when an overlay is requested.
-
-- [ ] **Step 4: Add deterministic SVG tests**
-
-Extend `tests/test_product_scene.py`:
+Add:
 
 ```python
 from ald_product_svg import render_final_svg, render_stack_svg, render_top_svg
@@ -286,12 +277,10 @@ from ald_product_svg import render_final_svg, render_stack_svg, render_top_svg
 
 def test_majorana_svg_views_are_deterministic_and_structurally_distinct():
     scene = build_product_scene(majorana_recipe(), stage="final")
-
     top_a = render_top_svg(scene)
     top_b = render_top_svg(scene)
     stack = render_stack_svg(scene)
     final = render_final_svg(scene)
-
     assert top_a == top_b
     assert top_a.startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
     assert b"H-shaped superconducting island" in top_a
@@ -305,94 +294,107 @@ def test_majorana_svg_views_are_deterministic_and_structurally_distinct():
 
 - [ ] **Step 5: Implement deterministic SVG serialization**
 
-In `ald_product_svg.py`, generate SVG bytes directly with `xml.sax.saxutils.escape`; do not use a browser or external rasterizer. Use a fixed 1600x900 viewBox and integer normalized layout coordinates. Physical dimension text may be annotated, but layout coordinates are explicitly schematic.
+In `ald_product_svg.py`, write XML directly with `xml.sax.saxutils.escape`. Use a fixed 1600x900 viewBox, fixed attribute order, integer presentation coordinates, LF line endings, no timestamps, and no random element IDs.
 
-Top-view rules:
+Top view requirements:
 
-- draw two long horizontal nanowire rectangles;
-- draw one vertical central backbone to form an H;
-- draw three gate-layer bands as semi-transparent schematic overlays;
-- draw five labeled dot circles `QD1` through `QD5`;
-- include a banner: `PUBLIC-REFERENCE SCHEMATIC — NOT A FABRICATION RECIPE`;
-- include the public tetron dimensions as text annotations, never as process instructions.
+- two horizontal nanowire rectangles;
+- one central vertical backbone forming an H;
+- three schematic gate bands;
+- five dot circles labeled QD1-QD5;
+- public tetron dimensions as text annotations;
+- banner `PUBLIC-REFERENCE SCHEMATIC — NOT A FABRICATION RECIPE`.
 
-Stack-view rules:
+Stack view requirements:
 
-- draw each layer in semantic order;
-- use a fixed display thickness for unknown layers and label them `UNSPECIFIED`;
-- use relative visual thickness for the known 6/2/10 nm layers while retaining exact values in labels;
-- never infer a numeric value for unknown thickness.
+- layers in semantic order;
+- exact text `UNSPECIFIED` for unknown layer material/thickness;
+- known 6 nm, 2 nm, and 10 nm values shown as labels;
+- unknown layers get a fixed display height only, never a fabricated numeric thickness.
 
-Final-view rules:
+Final view combines the top and stack concepts and contains `physical_fabrication_mapping=false` as text.
 
-- place top view on the left and stack view on the right in one 1600x900 SVG;
-- include the same provenance banner and `physical_fabrication_mapping=false` text.
+- [ ] **Step 6: Implement canonical product document serialization and parsing**
 
-Canonicalize output manually: fixed attribute order, `\n` line endings, no timestamps, no random IDs, and a final newline.
+`build_product_document()` validates exact 32-byte recipe/root digests and exactly these view keys: `top`, `stack`, `final`. Each view digest must be lowercase 64-character hex.
 
-- [ ] **Step 6: Implement canonical `product.json` bytes**
-
-Add `canonical_product_json()` in `ald_product_scene.py`. Serialize these exact top-level keys:
+`canonical_product_json()` serializes this exact shape:
 
 ```python
-{
-    "protocol": "ALD-PRODUCT-SCENE/1",
-    "recipe_id": scene.recipe_id,
-    "reference_target": scene.reference_target,
-    "reference_status": scene.reference_status,
-    "scientific_caveat": scene.scientific_caveat,
+payload = {
+    "gate_layers": [
+        {"function": item.function, "index": item.index, "schematic": item.schematic}
+        for item in document.scene.gate_layers
+    ],
+    "layers": [
+        {
+            "material": item.material,
+            "role": item.role,
+            "specified": item.specified,
+            "thickness_nm": item.thickness_nm,
+        }
+        for item in document.scene.layers
+    ],
+    "packet_root_hash": document.root_hash.hex(),
     "physical_fabrication_mapping": False,
-    "stage": scene.stage,
-    "layers": [...],
-    "tetron": {...},
-    "gate_layers": [...],
-    "quantum_dots": [...],
-    "unspecified_fields": [...],
-    "simulation_overlay": None or {...},
-    "recipe_sha256": recipe_sha256.hex(),
-    "packet_root_hash": root_hash.hex(),
-    "views": dict(sorted(view_sha256.items())),
+    "protocol": "ALD-PRODUCT-SCENE/1",
+    "quantum_dots": [
+        {
+            "index": item.index,
+            "label": item.label,
+            "schematic": item.schematic,
+            "shared_with_vertical_neighbor": item.shared_with_vertical_neighbor,
+        }
+        for item in document.scene.quantum_dots
+    ],
+    "recipe_id": document.scene.recipe_id,
+    "recipe_sha256": document.recipe_sha256.hex(),
+    "reference_status": document.scene.reference_status,
+    "reference_target": document.scene.reference_target,
+    "scientific_caveat": document.scene.scientific_caveat,
+    "simulation_overlay": None if document.scene.overlay is None else {
+        "coverage": document.scene.overlay.coverage,
+        "defect_fraction": document.scene.overlay.defect_fraction,
+        "label": document.scene.overlay.label,
+        "seed": document.scene.overlay.seed,
+        "thickness_nm": document.scene.overlay.thickness_nm,
+    },
+    "stage": document.scene.stage,
+    "tetron": {
+        "backbone_length_um": document.scene.tetron.backbone_length_um,
+        "backbone_width_nm": document.scene.tetron.backbone_width_nm,
+        "horizontal_nanowire_length_um": document.scene.tetron.horizontal_nanowire_length_um,
+        "horizontal_nanowire_width_nm": document.scene.tetron.horizontal_nanowire_width_nm,
+        "horizontal_nanowires": document.scene.tetron.horizontal_nanowires,
+        "shape": document.scene.tetron.shape,
+        "target_majorana_zero_modes": document.scene.tetron.target_majorana_zero_modes,
+    },
+    "unspecified_fields": list(document.scene.unspecified_fields),
+    "views": dict(sorted(document.view_sha256.items())),
 }
+return (
+    json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    + "\n"
+).encode("utf-8")
 ```
 
-Use:
+`parse_product_json()` must reject duplicate keys, nonfinite numbers, unexpected/missing fields, noncanonical JSON, `physical_fabrication_mapping` values other than exact `False`, malformed digests, invalid stage names, and invalid typed nested records. It returns a `ProductDocument` that reserializes byte-identically.
 
-```python
-json.dumps(
-    payload,
-    ensure_ascii=False,
-    allow_nan=False,
-    sort_keys=True,
-    separators=(",", ":"),
-).encode("utf-8") + b"\n"
-```
+- [ ] **Step 7: Run Task 1 tests and package modules**
 
-Validate `recipe_sha256` and `root_hash` are exact 32-byte values and every view digest is a 64-character lowercase hex string.
-
-- [ ] **Step 7: Package modules and run focused tests**
-
-Add `ald_product_scene` and `ald_product_svg` to `[tool.setuptools].py-modules` in `pyproject.toml`.
+Add `ald_product_scene` and `ald_product_svg` to `pyproject.toml`.
 
 Run:
 
 ```bash
 python -m pytest -q tests/test_product_scene.py
 python -m py_compile ald_product_scene.py ald_product_svg.py
-```
-
-Expected: all product-scene tests pass and both modules compile.
-
-- [ ] **Step 8: Run the existing non-FFmpeg regression suite**
-
-Run:
-
-```bash
 python -m pytest -q tests/test_ald_media_controller.py tests/test_media_codecs.py tests/test_phase_one_acceptance.py
 ```
 
-Expected: all existing tests remain green.
+Expected: all commands pass.
 
-- [ ] **Step 9: Commit Task 1**
+- [ ] **Step 8: Commit Task 1**
 
 ```bash
 git add ald_product_scene.py ald_product_svg.py tests/test_product_scene.py pyproject.toml
@@ -411,88 +413,81 @@ git commit -m "feat: add Majorana 2 product scene views"
 - Modify: `pyproject.toml`
 
 **Interfaces:**
-- Consumes: exact `core.HashedPacket` objects from `compile_recipe()` and the shared canonical packet parser in `ald_media_codecs`.
+
+- Consumes: exact `core.HashedPacket` objects.
 - Produces:
-  - `ProductDataRecord(sequence: int, pts_ms: int, duration_ms: int, packet: core.Packet, canonical_bytes: bytes, digest: bytes)`
+  - public `ald_media_codecs.validate_hashed_packet(item: core.HashedPacket) -> None`
+  - public `ald_media_codecs.decode_canonical_packet_bytes(payload: bytes) -> core.Packet`
+  - `ProductDataRecord`
   - `encode_product_slot(item: core.HashedPacket, *, pts_ms: int, duration_ms: int) -> bytes`
   - `decode_product_slot(slot: bytes) -> ProductDataRecord`
   - `build_product_slots(compiled: core.CompiledRecipe, *, interval_ms: int = 3000) -> tuple[bytes, ...]`
   - `write_product_slot_stream(compiled: core.CompiledRecipe, destination: Path, *, interval_ms: int = 3000, include_guard: bool = True) -> Path`
-  - public `ald_media_codecs.decode_canonical_packet_bytes(payload: bytes) -> core.Packet`
 
-- [ ] **Step 1: Expose the shared canonical packet decoder without changing QR behavior**
+- [ ] **Step 1: Promote shared packet validators without semantic changes**
 
-In `tests/test_media_codecs.py`, add:
+Add tests in `tests/test_media_codecs.py` that call the promoted functions:
 
 ```python
-from ald_media_codecs import decode_canonical_packet_bytes
+from ald_media_codecs import decode_canonical_packet_bytes, validate_hashed_packet
 
 
-def test_public_canonical_packet_decoder_round_trips_compiled_packet(compiled_recipe):
+def test_public_packet_helpers_accept_compiled_packet(compiled_recipe):
     item = compiled_recipe.packets[0]
-    packet = decode_canonical_packet_bytes(item.canonical_bytes)
-    assert core.canonical_packet_bytes(packet) == item.canonical_bytes
+    validate_hashed_packet(item)
+    decoded = decode_canonical_packet_bytes(item.canonical_bytes)
+    assert core.canonical_packet_bytes(decoded) == item.canonical_bytes
 ```
 
-Rename `_decode_canonical_packet()` to `decode_canonical_packet_bytes()` in `ald_media_codecs.py` and update `decode_qr_payload()` to call the public name. Do not change parsing rules or accepted canonical bytes.
-
-Run:
+Rename `_validate_hashed_packet` to `validate_hashed_packet` and `_decode_canonical_packet` to `decode_canonical_packet_bytes`. Update QR functions to call the promoted names. Run:
 
 ```bash
 python -m pytest -q tests/test_media_codecs.py
 ```
 
-Expected: existing QR/audio tests and the new public-parser test pass.
+Expected: all existing and new codec tests pass.
 
-- [ ] **Step 2: Write RED tests for exact slot layout and round-trip**
+- [ ] **Step 2: Write RED product slot tests**
 
-Create `tests/test_product_data.py` with:
+Create `tests/test_product_data.py`:
 
 ```python
-import hashlib
 from pathlib import Path
 
 import pytest
 
 import ald_hardened_core as core
-from ald_product_data import (
-    DATA_SLOT_BYTES,
-    build_product_slots,
-    decode_product_slot,
-    encode_product_slot,
-)
+from ald_product_data import DATA_SLOT_BYTES, build_product_slots, decode_product_slot, encode_product_slot
 
 
 RECIPE = Path("recipes/majorana2_public_specs_reference_sim.json")
 
 
 def compiled_recipe() -> core.CompiledRecipe:
-    return core.compile_recipe(core.validate_recipe(core.load_recipe(RECIPE)))
+    recipe = core.validate_recipe(core.load_recipe(RECIPE))
+    return core.compile_recipe(recipe)
 
 
-def test_product_slot_is_fixed_size_and_round_trips_canonical_packet():
+def test_product_slot_is_fixed_size_and_round_trips():
     item = compiled_recipe().packets[0]
     slot = encode_product_slot(item, pts_ms=0, duration_ms=3000)
-    decoded = decode_product_slot(slot)
-
+    record = decode_product_slot(slot)
     assert len(slot) == DATA_SLOT_BYTES == 1024
-    assert decoded.sequence == 0
-    assert decoded.pts_ms == 0
-    assert decoded.duration_ms == 3000
-    assert decoded.canonical_bytes == item.canonical_bytes
-    assert decoded.digest == item.digest
-    assert core.canonical_packet_bytes(decoded.packet) == item.canonical_bytes
+    assert record.sequence == 0
+    assert record.pts_ms == 0
+    assert record.duration_ms == 3000
+    assert record.canonical_bytes == item.canonical_bytes
+    assert record.digest == item.digest
+    assert core.canonical_packet_bytes(record.packet) == item.canonical_bytes
 
 
-def test_product_slots_have_contiguous_three_second_timeline():
+def test_product_slots_have_contiguous_timeline():
     compiled = compiled_recipe()
     records = tuple(decode_product_slot(slot) for slot in build_product_slots(compiled))
     assert [record.sequence for record in records] == list(range(len(compiled.packets)))
     assert [record.pts_ms for record in records] == [index * 3000 for index in range(len(records))]
-    assert {record.duration_ms for record in records} == {3000}
+    assert [record.duration_ms for record in records] == [3000] * len(records)
 ```
-
-- [ ] **Step 3: Run data tests and verify RED**
 
 Run:
 
@@ -500,21 +495,22 @@ Run:
 python -m pytest -q tests/test_product_data.py
 ```
 
-Expected: collection/import failure because `ald_product_data` does not exist.
+Expected: import failure for `ald_product_data`.
 
-- [ ] **Step 4: Implement the exact slot envelope**
+- [ ] **Step 3: Implement the exact binary envelope**
 
-In `ald_product_data.py` define:
+In `ald_product_data.py`:
 
 ```python
+from __future__ import annotations
+
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 import struct
 import zlib
 
 import ald_hardened_core as core
-from ald_media_codecs import decode_canonical_packet_bytes
+from ald_media_codecs import decode_canonical_packet_bytes, validate_hashed_packet
 
 
 DATA_MAGIC = b"ALDP"
@@ -536,82 +532,72 @@ class ProductDataRecord:
     digest: bytes
 ```
 
-The binary layout is exactly:
+The exact slot layout is:
 
 ```text
-4 bytes  magic = ALDP
-1 byte   version = 1
-4 bytes  sequence (big endian unsigned)
-8 bytes  pts_ms (big endian unsigned)
-4 bytes  duration_ms (big endian unsigned)
-2 bytes  canonical packet length (big endian unsigned)
+4 bytes  magic ALDP
+1 byte   version 1
+4 bytes  sequence, unsigned big endian
+8 bytes  pts_ms, unsigned big endian
+4 bytes  duration_ms, unsigned big endian
+2 bytes  canonical packet length, unsigned big endian
 32 bytes ALD1 chained packet digest
 N bytes  canonical packet bytes, N <= 800
-4 bytes  CRC-32 over header + canonical packet bytes
-zero padding to exactly 1024 bytes
+4 bytes  CRC-32 over header plus canonical packet bytes
+zero bytes through offset 1023
 ```
 
-`encode_product_slot()` must call the same hashed-packet structural checks used by the QR codec or repeat the exact immutable-type/hash checks without relaxing them. Require `0 <= pts_ms <= 2**63-1` and `1 <= duration_ms <= 2**32-1`.
-
-CRC code:
+Implementation core:
 
 ```python
-body = _HEADER.pack(
-    DATA_MAGIC,
-    DATA_VERSION,
-    item.packet.sequence,
-    pts_ms,
-    duration_ms,
-    len(item.canonical_bytes),
-    item.digest,
-) + item.canonical_bytes
-crc = _CRC.pack(zlib.crc32(body) & 0xFFFFFFFF)
-slot = body + crc
-return slot + bytes(DATA_SLOT_BYTES - len(slot))
+def encode_product_slot(item: core.HashedPacket, *, pts_ms: int, duration_ms: int) -> bytes:
+    validate_hashed_packet(item)
+    if type(pts_ms) is not int or not 0 <= pts_ms <= (2**63 - 1):
+        raise core.RecipeError("product PTS must be a non-negative 63-bit integer")
+    if type(duration_ms) is not int or not 1 <= duration_ms <= (2**32 - 1):
+        raise core.RecipeError("product duration must be a positive 32-bit integer")
+    if len(item.canonical_bytes) > MAX_CANONICAL_BYTES:
+        raise core.RecipeError("canonical packet exceeds product slot limit")
+    body = _HEADER.pack(
+        DATA_MAGIC,
+        DATA_VERSION,
+        item.packet.sequence,
+        pts_ms,
+        duration_ms,
+        len(item.canonical_bytes),
+        item.digest,
+    ) + item.canonical_bytes
+    encoded = body + _CRC.pack(zlib.crc32(body) & 0xFFFFFFFF)
+    if len(encoded) > DATA_SLOT_BYTES:
+        raise core.RecipeError("product record exceeds fixed slot")
+    return encoded + bytes(DATA_SLOT_BYTES - len(encoded))
 ```
 
-`decode_product_slot()` must require exact `bytes`, exact length 1024, exact magic/version, packet length <= 800, matching CRC, all remaining padding bytes zero, canonical packet parser success, and envelope sequence equal to parsed packet sequence.
+`decode_product_slot()` requires exact `bytes`, exact 1024-byte length, exact magic/version, valid positive duration, payload length <= 800, CRC match, zero-only padding, canonical packet parse success, and matching envelope/packet sequence.
 
-- [ ] **Step 5: Add corruption and boundary tests**
+- [ ] **Step 4: Add corruption and bound tests**
 
-Add explicit tests for every failure class:
+Add explicit tests for wrong magic, wrong version, sequence mismatch, zero duration, oversized declared packet length, corrupted packet bytes, corrupted digest, bad CRC, nonzero padding, truncation, and trailing bytes.
+
+Use this mutation pattern:
 
 ```python
-@pytest.mark.parametrize("offset", [0, 4, 8, 20, 60, 100])
+@pytest.mark.parametrize("offset", [0, 4, 8, 24, 60, 100])
 def test_product_slot_rejects_single_byte_corruption(offset):
     item = compiled_recipe().packets[0]
     slot = bytearray(encode_product_slot(item, pts_ms=0, duration_ms=3000))
-    slot[offset] ^= 0x01
+    slot[offset] ^= 1
     with pytest.raises(core.ALDError):
         decode_product_slot(bytes(slot))
-
-
-def test_product_slot_rejects_nonzero_padding():
-    item = compiled_recipe().packets[0]
-    slot = bytearray(encode_product_slot(item, pts_ms=0, duration_ms=3000))
-    slot[-1] = 1
-    with pytest.raises(core.ALDError, match="padding"):
-        decode_product_slot(bytes(slot))
-
-
-def test_product_slot_rejects_truncation_and_trailing_bytes():
-    item = compiled_recipe().packets[0]
-    slot = encode_product_slot(item, pts_ms=0, duration_ms=3000)
-    with pytest.raises(core.ALDError):
-        decode_product_slot(slot[:-1])
-    with pytest.raises(core.ALDError):
-        decode_product_slot(slot + b"\x00")
 ```
 
-Also mutate the version, sequence, duration, declared payload length, digest, canonical payload, and CRC independently. Each mutation must fail before any `HashedPacket` is returned to a simulator.
+- [ ] **Step 5: Implement deterministic slot stream and guard**
 
-- [ ] **Step 6: Implement slot-stream generation with one FFmpeg guard slot**
+`build_product_slots()` emits one real slot per compiled packet with `pts_ms = sequence * interval_ms` and `duration_ms = interval_ms`.
 
-`build_product_slots()` must produce only real packet slots. `write_product_slot_stream(..., include_guard=True)` writes all real slots followed by one all-zero 1024-byte guard slot.
+`write_product_slot_stream(..., include_guard=True)` writes all real slots followed by one all-zero 1024-byte guard. The guard exists only to provide a following timestamp for the final real MPEG-TS packet. Task 3 must prove the supported FFmpeg profile discards the guard from final MP4. Product verification rejects any extra data packet.
 
-The guard exists only to give the final real packet a following timestamp during MPEG-TS -> MP4 remux. It is not an executable record and the product-MP4 capability test in Task 3 must prove the final MP4 discards it. Verification must reject a final MP4 that retains a guard or any other extra data packet.
-
-- [ ] **Step 7: Run focused and regression tests**
+- [ ] **Step 6: Run and commit Task 2**
 
 Add `ald_product_data` to `pyproject.toml`, then run:
 
@@ -620,9 +606,9 @@ python -m pytest -q tests/test_product_data.py tests/test_media_codecs.py
 python -m py_compile ald_product_data.py ald_media_codecs.py
 ```
 
-Expected: all tests pass.
+Expected: all commands pass.
 
-- [ ] **Step 8: Commit Task 2**
+Commit:
 
 ```bash
 git add ald_product_data.py ald_media_codecs.py tests/test_product_data.py tests/test_media_codecs.py pyproject.toml
@@ -631,7 +617,7 @@ git commit -m "feat: add timed product MP4 data records"
 
 ---
 
-### Task 3: Product Raster Frames, BFSK Track, and Real FFmpeg H.264/AAC/gpmd MP4
+### Task 3: Product Raster/BFSK Sources and Real FFmpeg MP4 Data Track
 
 **Files:**
 - Create: `ald_product_render.py`
@@ -640,16 +626,20 @@ git commit -m "feat: add timed product MP4 data records"
 - Modify: `pyproject.toml`
 
 **Interfaces:**
-- Consumes: `core.CompiledRecipe`, `core.Recipe`, `core.SimulationResult`, `media.MediaProfile`, Task 1 scene/SVG model, Task 2 slot stream, existing `encode_checksum_audio()`.
-- Produces:
-  - `ProductTrackSources(frame_dir: Path, checksum_wav: Path, data_slots: Path, packet_count: int, duration_seconds: float)`
-  - `stage_product_tracks(compiled, simulation, root, profile) -> ProductTrackSources`
-  - `ProductMP4Probe(data_packets: tuple[ProductPacketTiming, ...], video_stream_index: int, audio_stream_index: int, data_stream_index: int)`
-  - `probe_product_mp4_capabilities(capabilities: MediaCapabilities) -> None`
-  - `mux_product_mp4(sources: ProductTrackSources, destination: Path, capabilities: MediaCapabilities, profile: MediaProfile) -> Path`
-  - `probe_product_mp4(path: Path, capabilities: MediaCapabilities, *, packet_count: int, interval_seconds: float) -> ProductMP4Probe`
 
-- [ ] **Step 1: Write RED staging tests that prove product frames contain no executable QR dependency**
+- Consumes: compiled recipe, successful simulation, fixed media profile, scene builder, product slot stream, existing BFSK encoder, existing `MediaCapabilities` and `run_media_tool()`.
+- Produces:
+  - `ProductTrackSources`
+  - `ProductPacketTiming`
+  - `ProductMP4Probe`
+  - `stage_product_tracks(compiled: core.CompiledRecipe, simulation: core.SimulationResult, root: Path, profile: media.MediaProfile) -> ProductTrackSources`
+  - `probe_product_mp4_capabilities(capabilities: MediaCapabilities) -> None`
+  - `mux_product_mp4(sources: ProductTrackSources, destination: Path, capabilities: MediaCapabilities, profile: media.MediaProfile) -> Path`
+  - `probe_product_mp4(path: Path, capabilities: MediaCapabilities, *, packet_count: int, interval_seconds: float) -> ProductMP4Probe`
+  - `extract_product_data(path: Path, destination: Path, capabilities: MediaCapabilities) -> Path`
+  - `extract_product_audio(path: Path, destination: Path, capabilities: MediaCapabilities) -> Path`
+
+- [ ] **Step 1: Write RED staging tests**
 
 Create `tests/test_product_mp4.py`:
 
@@ -669,15 +659,14 @@ RECIPE = Path("recipes/majorana2_public_specs_reference_sim.json")
 def compile_and_simulate():
     recipe = core.validate_recipe(core.load_recipe(RECIPE))
     compiled = core.compile_recipe(recipe)
-    simulation = core.SimulatedALDController().execute(compiled, seed=42)
+    simulation = core.SimulatedALDController().execute(compiled, 42)
     assert simulation.fault is None
-    return recipe, compiled, simulation
+    return compiled, simulation
 
 
 def test_product_staging_generates_one_visual_interval_per_packet(tmp_path):
-    recipe, compiled, simulation = compile_and_simulate()
+    compiled, simulation = compile_and_simulate()
     sources = stage_product_tracks(compiled, simulation, tmp_path, media.DEFAULT_MEDIA_PROFILE)
-
     frames = sorted(sources.frame_dir.glob("frame-*.png"))
     assert len(frames) == len(compiled.packets)
     assert sources.packet_count == len(compiled.packets)
@@ -686,11 +675,11 @@ def test_product_staging_generates_one_visual_interval_per_packet(tmp_path):
         assert image.size == (1920, 1080)
 ```
 
-Add a test that monkeypatches `ald_media_codecs.render_instruction_frame` to raise if called; `stage_product_tracks()` must still succeed. This proves product mode does not render QR instruction frames.
+Add a monkeypatch test that replaces `media.render_instruction_frame` with a function that raises `AssertionError`; `stage_product_tracks()` must still pass.
 
-- [ ] **Step 2: Implement deterministic raster-frame staging**
+- [ ] **Step 2: Implement deterministic product frames and full BFSK WAV**
 
-In `ald_product_render.py`, map packet opcodes to visualization stages exactly:
+Use this exact opcode-stage map:
 
 ```python
 _STAGE_BY_OPCODE = {
@@ -704,88 +693,91 @@ _STAGE_BY_OPCODE = {
 }
 ```
 
-Each frame must include:
+Each 1920x1080 Pillow frame includes the H tetron, gate bands, QD labels, stack context, packet sequence/opcode as status text, and the banner `PUBLIC-REFERENCE SCHEMATIC — NOT A FABRICATION RECIPE`. For `simulation-status` and `final`, include final synthetic coverage/thickness/defect values and seed with label `synthetic simulator status`. Do not call QR rendering or embed command payloads in pixels.
 
-- the same schematic H-tetron / gate / dot / stack concepts as the SVG scene;
-- current packet sequence and opcode as human-readable status only;
-- `PUBLIC-REFERENCE SCHEMATIC` and `NOT A FABRICATION RECIPE` text;
-- for `simulation-status` and `final`, the final generic A/B surrogate coverage/thickness/defect values plus seed, labeled `synthetic simulator status`;
-- no QR symbol and no encoded command payload in the pixels.
-
-Use Pillow primitives and `ImageFont.load_default(size=...)`; no platform font files. Use only deterministic integer coordinates and no timestamps.
-
-- [ ] **Step 3: Implement one concatenated BFSK checksum WAV**
-
-In `stage_product_tracks()`, concatenate one `media.encode_checksum_audio(packet.sequence, packet.digest, profile)` array per packet:
+Build the full checksum audio as:
 
 ```python
-samples = np.concatenate(
-    [media.encode_checksum_audio(item.packet.sequence, item.digest, profile) for item in compiled.packets]
-)
+intervals = [
+    media.encode_checksum_audio(item.packet.sequence, item.digest, profile)
+    for item in compiled.packets
+]
+samples = np.concatenate(intervals)
 pcm = np.rint(np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
 ```
 
-Write a mono 16-bit 48 kHz PCM WAV whose frame count is exactly:
+Write mono 16-bit PCM at 48 kHz and require exact frame count `packet_count * 3 * 48000` for the fixed profile.
+
+Write `packet-slots.bin` with Task 2's guard slot.
+
+- [ ] **Step 3: Write a real FFmpeg capability test for the data bridge**
+
+Mark the test `requires_ffmpeg`. `probe_product_mp4_capabilities()` creates two deterministic real 1024-byte slots plus one zero guard and runs the following exact raw-data staging argv, substituting only resolved executable paths:
 
 ```python
-len(compiled.packets) * round(profile.interval_seconds * profile.sample_rate)
+stage_args = [
+    str(capabilities.ffmpeg),
+    "-hide_banner",
+    "-loglevel", "error",
+    "-f", "data",
+    "-raw_packet_size", "1024",
+    "-i", str(slot_path),
+    "-map", "0:0",
+    "-c", "copy",
+    "-bsf:0", "setts=pts=N*3000:dts=N*3000:duration=3000:time_base=1/1000",
+    "-f", "mpegts",
+    "-y", str(data_ts),
+]
 ```
 
-Call `write_product_slot_stream(compiled, root / "packet-slots.bin", interval_ms=3000, include_guard=True)` for the data input.
+Then create a six-second test MP4 with lavfi video/audio and the staged data:
 
-- [ ] **Step 4: Write a real FFmpeg capability test for the 1024-byte gpmd bridge**
-
-Mark the test with `@pytest.mark.requires_ffmpeg`. The test must call `probe_media_capabilities()` and then `probe_product_mp4_capabilities()`.
-
-The capability proof must construct at least two nonzero 1024-byte test slots plus one zero guard slot and execute this two-stage pattern using `run_media_tool()` only:
-
-Stage raw slots to MPEG-TS:
-
-```text
-ffmpeg
-  -hide_banner -loglevel error
-  -f data -raw_packet_size 1024 -i packet-slots.bin
-  -map 0:0
-  -c copy
-  -bsf:0 setts=pts=N*3000:dts=N*3000:duration=3000:time_base=1/1000
-  -f mpegts data.ts
+```python
+mux_args = [
+    str(capabilities.ffmpeg),
+    "-hide_banner",
+    "-loglevel", "error",
+    "-f", "lavfi",
+    "-i", "color=c=black:s=320x240:r=1:d=6",
+    "-f", "lavfi",
+    "-i", "anullsrc=r=48000:cl=mono:d=6",
+    "-i", str(data_ts),
+    "-map", "0:v:0",
+    "-map", "1:a:0",
+    "-map", "2:d:0",
+    "-c:v", capabilities.video_encoder,
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-c:d", "copy",
+    "-copy_unknown",
+    "-tag:d:0", "gpmd",
+    "-metadata:s:d:0", "handler_name=ALD Instruction Data",
+    "-movflags", "+faststart",
+    "-y", str(product_mp4),
+]
 ```
 
-Then combine deterministic test video/audio with `data.ts` into MP4:
+Probe with ffprobe and require exactly one H.264 video, one AAC audio, and one `codec_type=data`, `codec_name=bin_data`, `codec_tag_string=gpmd` stream.
 
-```text
-ffmpeg
-  -hide_banner -loglevel error
-  ... video input ...
-  ... audio input ...
-  -i data.ts
-  -map 0:v:0 -map 1:a:0 -map 2:d:0
-  -c:v <capabilities.video_encoder>
-  -pix_fmt yuv420p
-  -c:a aac -b:a 128k
-  -c:d copy
-  -copy_unknown
-  -tag:d:0 gpmd
-  -metadata:s:d:0 handler_name=ALD Instruction Data
-  -movflags +faststart
-  product.mp4
+Extract the data stream with:
+
+```python
+extract_args = [
+    str(capabilities.ffmpeg),
+    "-hide_banner",
+    "-loglevel", "error",
+    "-i", str(product_mp4),
+    "-map", "0:d:0",
+    "-c", "copy",
+    "-f", "data",
+    "-y", str(extracted),
+]
 ```
 
-After muxing, require ffprobe to show exactly one video stream, one audio stream, and one `codec_type=data`, `codec_name=bin_data`, `codec_tag_string=gpmd` stream.
+Require `extracted.read_bytes()` to equal the two real slots exactly; the zero guard must not be present. Require two ffprobe data packets, each size 1024, with PTS 0 and 3 seconds and duration 3 seconds within 50 ms. Any failure raises `core.DependencyError`; there is no alternate subtitle/OCR/sidecar mode.
 
-Extract the final data stream:
-
-```text
-ffmpeg -hide_banner -loglevel error -i product.mp4 -map 0:d:0 -c copy -f data extracted.bin
-```
-
-Require `extracted.bin` to equal exactly the real slots and to exclude the guard slot.
-
-Require ffprobe packet timing to show real data samples at 0 ms, 3000 ms, ... with a 3000 ms interval tolerance no larger than 50 ms.
-
-If any of these invariants fail, raise `core.DependencyError` with a message stating the local FFmpeg build cannot produce the required ALD product data track. Do not fall back to subtitles, OCR, file metadata, or sidecars.
-
-- [ ] **Step 5: Run the real capability test and verify GREEN before product muxing**
+- [ ] **Step 4: Run the capability test before implementing real muxing**
 
 Run:
 
@@ -793,60 +785,57 @@ Run:
 python -m pytest -q tests/test_product_mp4.py -m requires_ffmpeg
 ```
 
-Expected: the raw-data -> MPEG-TS -> MP4 bridge passes on the supported CI FFmpeg image. If it fails, stop Task 3 and keep the failure as the compatibility gate rather than weakening the data-track contract.
+Expected: the capability proof is green on the supported CI FFmpeg build.
 
-- [ ] **Step 6: Implement final product MP4 muxing**
+- [ ] **Step 5: Implement final `product.mp4` muxing**
 
-`mux_product_mp4()` first runs or relies on a cached successful per-process capability probe, then stages the real packet-slot stream to `data.ts` with the exact `setts` expression above.
+Stage `data.ts` with the exact `setts` command from Step 3. Use product PNGs as input 0, checksum WAV as input 1, and `data.ts` as input 2.
 
-Use image2 for the product frames:
-
-```text
--framerate 1/3 -start_number 0 -i frame-%06d.png
-```
-
-Use the staged checksum WAV as input 1 and `data.ts` as input 2. Map exactly one stream of each type. Do not use `-shortest`; the trailing guard data packet must be read so FFmpeg can derive the final real data-sample duration, while the zero-duration guard itself is discarded by the accepted profile.
-
-Encode H.264/AAC and copy the `bin_data` stream using `gpmd`. After the file is closed, call `probe_product_mp4()` and reject publication unless:
-
-- video codec is H.264 and dimensions are exactly 1920x1080;
-- audio codec is AAC, mono, 48 kHz;
-- data codec is `bin_data` with tag `gpmd`;
-- there are exactly `packet_count` data packets, each exactly 1024 bytes;
-- data PTS starts at 0 and increments by 3 seconds within 50 ms;
-- each data-packet duration is 3 seconds within 50 ms;
-- overall media duration covers all packet intervals.
-
-- [ ] **Step 7: Add end-to-end MP4 track tests**
-
-Add:
+The final argv shape is:
 
 ```python
-@pytest.mark.requires_ffmpeg
-def test_real_product_mp4_contains_video_audio_and_gpmd_data(tmp_path):
-    recipe, compiled, simulation = compile_and_simulate()
-    capabilities = probe_media_capabilities()
-    sources = stage_product_tracks(compiled, simulation, tmp_path / "source", media.DEFAULT_MEDIA_PROFILE)
-    output = mux_product_mp4(
-        sources,
-        tmp_path / "product.mp4",
-        capabilities,
-        media.DEFAULT_MEDIA_PROFILE,
-    )
-    probe = probe_product_mp4(
-        output,
-        capabilities,
-        packet_count=len(compiled.packets),
-        interval_seconds=3.0,
-    )
-    assert len(probe.data_packets) == len(compiled.packets)
+args = [
+    str(capabilities.ffmpeg),
+    "-hide_banner",
+    "-loglevel", "error",
+    "-framerate", "1/3",
+    "-start_number", "0",
+    "-i", str(sources.frame_dir / "frame-%06d.png"),
+    "-i", str(sources.checksum_wav),
+    "-i", str(data_ts),
+    "-map", "0:v:0",
+    "-map", "1:a:0",
+    "-map", "2:d:0",
+    "-c:v", capabilities.video_encoder,
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-c:d", "copy",
+    "-copy_unknown",
+    "-tag:d:0", "gpmd",
+    "-metadata:s:d:0", "handler_name=ALD Instruction Data",
+    "-movflags", "+faststart",
+    "-y", str(destination),
+]
 ```
 
-Also extract the data stream and decode each 1024-byte slot; compare canonical bytes and digests with `compiled.packets`.
+Do not add `-shortest`; FFmpeg must read the trailing guard so the final real data packet receives a duration, while the guard itself is discarded by the accepted profile.
 
-- [ ] **Step 8: Package and run focused tests**
+`probe_product_mp4()` rejects output unless:
 
-Add `ald_product_render` and `ald_product_mp4` to `pyproject.toml`.
+- video is H.264, 1920x1080;
+- audio is AAC, mono, 48 kHz;
+- data is `bin_data/gpmd`;
+- stream counts are exactly one video, one audio, one data;
+- data packet count equals canonical packet count;
+- every data packet is 1024 bytes;
+- PTS values are `sequence * 3.0` seconds within 0.05 seconds;
+- duration values are 3.0 seconds within 0.05 seconds;
+- media duration covers the final packet interval.
+
+- [ ] **Step 6: Add end-to-end track tests**
+
+Add a real Majorana recipe test that stages sources, muxes `product.mp4`, probes it, extracts its data stream, splits it into 1024-byte slots, decodes every slot, and compares `canonical_bytes` and `digest` with `compiled.packets`.
 
 Run:
 
@@ -855,9 +844,13 @@ python -m pytest -q tests/test_product_scene.py tests/test_product_data.py tests
 python -m py_compile ald_product_render.py ald_product_mp4.py
 ```
 
-Expected: all tests pass, with FFmpeg-marked tests running on machines that satisfy the existing FFmpeg requirement.
+Expected: all tests pass.
 
-- [ ] **Step 9: Commit Task 3**
+- [ ] **Step 7: Package and commit Task 3**
+
+Add `ald_product_render` and `ald_product_mp4` to `pyproject.toml`.
+
+Commit:
 
 ```bash
 git add ald_product_render.py ald_product_mp4.py tests/test_product_mp4.py pyproject.toml
@@ -866,7 +859,7 @@ git commit -m "feat: mux visual product MP4 data tracks"
 
 ---
 
-### Task 4: Canonical Product Bundle, Signature Binding, and Fail-Closed Verification
+### Task 4: Canonical Product Bundle, Signatures, and Fail-Closed Verification
 
 **Files:**
 - Create: `ald_product_bundle.py`
@@ -877,19 +870,17 @@ git commit -m "feat: mux visual product MP4 data tracks"
 - Modify: `pyproject.toml`
 
 **Interfaces:**
-- Consumes: completed `product.mp4`, canonical recipe bytes, `product.json`, three SVG views, compiled packet index, FFmpeg metadata, existing optional Ed25519 keys.
+
 - Produces:
   - `PRODUCT_BUNDLE_KEYS`
-  - `write_product_bundle_index(...) -> Path`
-  - `VerifiedProductRecipe(packets, root_hash, profile, signature_status, recipe_bytes, product_bytes, render_seed)`
+  - `write_product_bundle_index(...) -> Path` implemented with explicit arguments listed in Step 3
+  - `VerifiedProductRecipe`
   - `verify_product_bundle(index_path: Path, *, require_signature: bool = False, trusted_public_key: Path | None = None) -> VerifiedProductRecipe`
-- Existing `sign_bundle_index()` and `verify_bundle_signature_bytes()` remain source-compatible for HLS callers while accepting an optional bundle-key schema for product bundles.
+- Existing HLS signature calls remain source-compatible.
 
-- [ ] **Step 1: Generalize signature schema without changing HLS defaults**
+- [ ] **Step 1: Generalize the signature parser with an explicit schema argument**
 
-In `ald_hls_signature.py`, rename the hardcoded key set to `_HLS_BUNDLE_KEYS` and change internal parsers to accept `expected_keys`.
-
-Keep existing two-argument calls valid:
+Change the HLS constant to `_HLS_BUNDLE_KEYS` and define:
 
 ```python
 def sign_bundle_index(
@@ -898,7 +889,8 @@ def sign_bundle_index(
     *,
     expected_keys: frozenset[str] = _HLS_BUNDLE_KEYS,
 ) -> BundleSignature:
-    ...
+    bundle, _ = _load_bundle(Path(index_path), expected_keys=expected_keys)
+    return _sign_loaded_bundle(bundle, Path(index_path), Path(private_key_path))
 
 
 def verify_bundle_signature_bytes(
@@ -907,22 +899,21 @@ def verify_bundle_signature_bytes(
     *,
     expected_keys: frozenset[str] = _HLS_BUNDLE_KEYS,
 ) -> SignatureStatus:
-    ...
+    bundle, _ = _parse_bundle_bytes(bundle_bytes, expected_keys=expected_keys)
+    return _verify_loaded_bundle(bundle, trusted_public_key)
 ```
 
-Thread `expected_keys` through `_parse_bundle_bytes()` and `_load_bundle()`; keep the signature domain `ALD-BUNDLE-SIGNATURE\x00` unchanged.
-
-Run the existing signature/HLS verification tests immediately:
+Refactor existing private helpers so the only semantic change is schema selection. Keep `ALD-BUNDLE-SIGNATURE\x00` unchanged. Add regression tests and run:
 
 ```bash
 python -m pytest -q tests/test_hls_verification.py
 ```
 
-Expected: all existing tests remain green before product schema support is added.
+Expected: all existing HLS tests pass.
 
-- [ ] **Step 2: Write the product manifest contract test**
+- [ ] **Step 2: Define the exact product manifest schema**
 
-Create `tests/test_product_verification.py` and assert `bundle.json` has these exact top-level keys:
+In `ald_product_bundle.py`:
 
 ```python
 PRODUCT_BUNDLE_KEYS = frozenset({
@@ -942,68 +933,87 @@ PRODUCT_BUNDLE_KEYS = frozenset({
 })
 ```
 
-Use these exact nested forms:
+Nested shapes are exact:
 
 ```python
-"protocol": "ALD-PRODUCT/1"
-"media_type": "product-mp4"
-"product": {"path": "product.mp4", "sha256": "<64 hex>"}
-"recipe": {"path": "recipe.canonical.json", "sha256": "<64 hex>"}
-"scene": {"path": "product.json", "sha256": "<64 hex>"}
-"views": {
-    "final": {"path": "product-final.svg", "sha256": "<64 hex>"},
-    "stack": {"path": "product-stack.svg", "sha256": "<64 hex>"},
-    "top": {"path": "product-top.svg", "sha256": "<64 hex>"},
+product_record = {"path": "product.mp4", "sha256": hashlib.sha256(product_bytes).hexdigest()}
+recipe_record = {"path": "recipe.canonical.json", "sha256": hashlib.sha256(recipe_bytes).hexdigest()}
+scene_record = {"path": "product.json", "sha256": hashlib.sha256(scene_bytes).hexdigest()}
+view_records = {
+    "final": {"path": "product-final.svg", "sha256": hashlib.sha256(final_svg).hexdigest()},
+    "stack": {"path": "product-stack.svg", "sha256": hashlib.sha256(stack_svg).hexdigest()},
+    "top": {"path": "product-top.svg", "sha256": hashlib.sha256(top_svg).hexdigest()},
 }
-"packets": [
-    {"sequence": 0, "digest": "<64 hex>", "pts_ms": 0, "duration_ms": 3000},
-    ...
+```
+
+Packet entries are:
+
+```python
+packet_records = [
+    {
+        "digest": item.digest.hex(),
+        "duration_ms": 3000,
+        "pts_ms": item.packet.sequence * 3000,
+        "sequence": item.packet.sequence,
+    }
+    for item in compiled.packets
 ]
 ```
 
-`media_profile` carries the existing fixed width/height/interval/audio fields but omits QR-only fields from the product manifest. `ffmpeg` includes `version`, `video_encoder`, `audio_encoder`, `data_codec="bin_data"`, and `data_tag="gpmd"`.
+Product `media_profile` keys are exactly `width`, `height`, `interval_seconds`, `sample_rate`, `symbol_rate`, `mark_hz`, `space_hz`, `copies`, `required_matching_copies`. Product `ffmpeg` keys are exactly `version`, `video_encoder`, `audio_encoder`, `data_codec`, `data_tag` with `data_codec="bin_data"` and `data_tag="gpmd"`.
 
-- [ ] **Step 3: Implement canonical product index writing**
+- [ ] **Step 3: Implement canonical atomic index writing**
 
-In `ald_product_bundle.py`:
+Define this interface:
 
-- reject symlinks and missing/non-regular artifact paths;
-- hash final artifact bytes with SHA-256;
-- derive packet entries only from the trusted `core.CompiledRecipe`;
-- require packet PTS `sequence * 3000` and duration 3000;
-- write canonical sorted compact JSON plus newline;
-- initialize `signature` to `None`;
-- write atomically in the candidate bundle directory.
+```python
+def write_product_bundle_index(
+    compiled: core.CompiledRecipe,
+    *,
+    product_path: Path,
+    recipe_path: Path,
+    scene_path: Path,
+    top_svg_path: Path,
+    stack_svg_path: Path,
+    final_svg_path: Path,
+    destination: Path,
+    profile: media.MediaProfile,
+    render_seed: int,
+    ffmpeg_version: str,
+    video_encoder: str,
+    audio_encoder: str,
+) -> Path:
+```
 
-Do not include absolute filesystem paths.
+Reject symlinks/missing/non-regular files, require exact `int` render seed, hash final bytes, use only relative fixed artifact names, initialize `signature=None`, serialize canonical sorted compact JSON plus LF, and publish atomically inside the candidate bundle.
 
-- [ ] **Step 4: Write RED verifier tests for all bound artifacts**
+- [ ] **Step 4: Write RED tamper tests**
 
-Create a fixture that builds a real candidate product bundle with the Majorana recipe at seed 42. Add one test per mutation:
+Build one real Majorana candidate bundle at seed 42. Add separate tests that mutate:
 
-- flip one byte in `product.mp4`;
-- flip one byte in `product.json`;
-- alter `product-top.svg`;
-- alter `product-stack.svg`;
-- alter `product-final.svg`;
-- alter `recipe.canonical.json`;
-- change one packet digest in `bundle.json`;
-- change one packet PTS/duration;
-- remove or add a top-level manifest key;
-- make an artifact path a symlink;
-- add an unexpected stream to a copied MP4 fixture when feasible;
-- corrupt one data slot while keeping the manifest file digest updated in an unsigned test fixture;
-- corrupt one audio interval while keeping the manifest file digest updated in an unsigned test fixture.
+- one byte in `product.mp4`;
+- one byte in `product.json`;
+- each SVG individually;
+- `recipe.canonical.json`;
+- one packet digest in `bundle.json`;
+- one packet PTS;
+- one packet duration;
+- one top-level manifest key;
+- one bound artifact replaced with a symlink;
+- one extracted/rebuilt data slot with the manifest MP4 digest updated;
+- one audio interval with the manifest MP4 digest updated.
 
-Every case must raise `IntegrityError` and return no executable packets.
+Each test requires `IntegrityError` and no returned packet stream.
 
-- [ ] **Step 5: Implement strict product bundle parsing and artifact binding**
+- [ ] **Step 5: Implement strict product manifest/artifact parsing**
 
-In `ald_product_verify.py`, define:
+In `ald_product_verify.py`:
 
 ```python
 from dataclasses import dataclass
 
+import ald_hardened_core as core
+import ald_media_codecs as media
 from ald_hls_signature import SignatureStatus
 
 
@@ -1022,9 +1032,7 @@ class VerifiedProductRecipe:
     render_seed: int
 ```
 
-Parse `bundle.json` with duplicate-key rejection, nonfinite-number rejection, exact key sets, canonical sorted compact JSON enforcement, safe relative filenames, and digest checks.
-
-Require artifact filenames exactly:
+Require exact artifact filenames:
 
 ```text
 product.mp4
@@ -1035,99 +1043,100 @@ product-stack.svg
 product-final.svg
 ```
 
-Require no symlink for any bound artifact.
+Reject duplicate JSON keys, nonfinite numbers, unexpected/missing fields, noncanonical JSON, unsafe relative paths, symlinks, digest mismatches, invalid render seed, and media profile drift.
 
-- [ ] **Step 6: Verify the MP4 stream structure and packet timing before data extraction**
+- [ ] **Step 6: Verify MP4 stream structure and packet timing before extracting instructions**
 
-Call `probe_product_mp4()` and require exactly the profile described in Task 3. Compare every ffprobe data packet against the manifest packet index:
+Call `probe_product_mp4()` and compare each data packet to manifest packet metadata with:
 
 ```python
-abs(actual_pts_seconds - expected_pts_ms / 1000.0) <= 0.05
-abs(actual_duration_seconds - expected_duration_ms / 1000.0) <= 0.05
-actual_size == 1024
+if abs(actual.pts_seconds - expected["pts_ms"] / 1000.0) > 0.05:
+    raise IntegrityError("product data PTS mismatch")
+if abs(actual.duration_seconds - expected["duration_ms"] / 1000.0) > 0.05:
+    raise IntegrityError("product data duration mismatch")
+if actual.size != 1024:
+    raise IntegrityError("product data packet size mismatch")
 ```
 
-Reject extra, missing, reordered, duplicate, zero-duration, or out-of-window data samples.
+Reject extra, missing, reordered, duplicate, or zero-duration samples.
 
 - [ ] **Step 7: Extract and verify authoritative instruction slots**
 
-Demux only the data stream to a private temporary file using:
+Use `extract_product_data()`. Require byte length `len(packet_records) * 1024` and split on exact slot boundaries.
 
-```text
-ffmpeg -hide_banner -loglevel error -i product.mp4 -map 0:d:0 -c copy -f data extracted.bin
-```
-
-Require exact byte length `packet_count * 1024` and split on 1024-byte boundaries.
-
-For every slot:
-
-1. `decode_product_slot()` must succeed.
-2. slot sequence equals index.
-3. embedded PTS/duration equal manifest PTS/duration.
-4. recompute `expected_digest = core.hash_packet(previous_digest, canonical_bytes)`.
-5. require embedded digest equals expected digest and manifest digest.
-6. create `core.HashedPacket(packet, canonical_bytes, previous_digest, digest)` only after all checks succeed.
-7. advance `previous_digest`.
-
-Require the final digest equals manifest `root_hash`.
-
-- [ ] **Step 8: Decode the full AAC checksum track and verify one BFSK witness per interval**
-
-Demux audio to mono 48 kHz 16-bit PCM WAV using the local FFmpeg boundary. Read the complete PCM vector and require exactly `packet_count * interval_samples` samples.
-
-For each packet interval:
+For each index:
 
 ```python
-start = sequence * interval_samples
-stop = start + interval_samples
-record = media.decode_checksum_audio(samples[start:stop], profile)
-assert record.sequence == sequence
-assert record.digest == verified_data_record.digest
+record = decode_product_slot(slot)
+if record.sequence != index:
+    raise IntegrityError("product data sequence discontinuity")
+if record.pts_ms != packet_record["pts_ms"] or record.duration_ms != packet_record["duration_ms"]:
+    raise IntegrityError("product data timeline does not match bundle index")
+expected_digest = core.hash_packet(previous_digest, record.canonical_bytes)
+if record.digest != expected_digest or record.digest.hex() != packet_record["digest"]:
+    raise IntegrityError("product data digest mismatch")
+verified_packets.append(
+    core.HashedPacket(
+        packet=record.packet,
+        canonical_bytes=record.canonical_bytes,
+        previous_digest=previous_digest,
+        digest=record.digest,
+    )
+)
+previous_digest = record.digest
 ```
 
-Any missing/conflicting/CRC-invalid audio witness is an `IntegrityError`. Do not use video frames to recover instructions.
+Require final `previous_digest` equals manifest root hash.
 
-- [ ] **Step 9: Recompile the bound recipe bytes and require exact packet identity**
+- [ ] **Step 8: Decode the full AAC track and require one matching BFSK witness per interval**
 
-Stage `recipe.canonical.json` bytes to a private temporary file exactly as `_bind_verified_recipe()` currently does, validate and compile it, then compare:
+Use `extract_product_audio()` to produce mono 48 kHz PCM WAV. Read all samples and require exact length `packet_count * 144000` for the fixed 3-second profile.
 
-- packet count;
-- each canonical packet byte string;
-- each previous digest;
-- each digest;
-- root hash.
+For each interval:
 
-This prevents a self-consistent data track from being substituted for a different bound recipe.
+```python
+start = sequence * 144000
+stop = start + 144000
+audio_record = media.decode_checksum_audio(samples[start:stop], profile)
+if audio_record.sequence != sequence or audio_record.digest != verified_packets[sequence].digest:
+    raise IntegrityError("product audio witness does not match product data")
+```
 
-- [ ] **Step 10: Validate `product.json` scientific/safety boundary and SVG reproducibility**
+Do not decode QR or OCR video pixels.
 
-Parse `product.json` canonically and require:
+- [ ] **Step 9: Recompile bound recipe bytes and require exact packet identity**
 
-- `protocol == "ALD-PRODUCT-SCENE/1"`;
-- `recipe_id` equals the bound recipe;
+Stage bound recipe bytes into a private temporary `recipe.canonical.json`, run existing load/validate/compile, and compare packet count, every canonical byte string, every previous digest, every digest, and root hash to the data-track-derived packet stream.
+
+- [ ] **Step 10: Parse product JSON and re-render bound SVGs**
+
+Call `parse_product_json(product_bytes)`. Require:
+
+- scene protocol `ALD-PRODUCT-SCENE/1`;
+- recipe ID equals the bound recipe;
 - `physical_fabrication_mapping is False`;
-- `recipe_sha256` equals the bound canonical recipe digest;
-- `packet_root_hash` equals the verified ALD1 root;
-- `views` digests equal the manifest view digests;
-- `simulation_overlay.seed` equals manifest `render_seed` when an overlay is present.
+- recipe SHA-256 equals canonical recipe bytes;
+- packet root equals verified root;
+- view digests equal manifest SVG digests;
+- simulation overlay exists and overlay seed equals manifest `render_seed`.
 
-Rebuild the final `ProductScene` from the bound recipe and the manifest/product metadata necessary for deterministic rendering. Re-render the three SVGs and compare bytes with the bound SVG files. Do not attempt to reconstruct stochastic simulation values from video pixels.
+Re-render top/stack/final SVG bytes from `document.scene` and require byte equality with each bound SVG.
 
-- [ ] **Step 11: Add product Ed25519 tests**
+- [ ] **Step 11: Verify optional signatures with product schema**
 
-Use `sign_bundle_index(index, private_key, expected_keys=PRODUCT_BUNDLE_KEYS)` and verify with:
+Call:
 
 ```python
-verify_bundle_signature_bytes(
+status = verify_bundle_signature_bytes(
     raw_bundle_bytes,
     trusted_public_key,
     expected_keys=PRODUCT_BUNDLE_KEYS,
 )
 ```
 
-Tests must cover unsigned accepted-by-default, unsigned rejected when required, valid signature accepted with trusted key, wrong key rejected, and any signed product/SVG/recipe/data manifest digest change rejected.
+Tests cover unsigned accepted by default, unsigned rejected when required, valid trusted signature accepted, wrong trusted key rejected, and signed manifest mutation rejected.
 
-- [ ] **Step 12: Package and run verification suites**
+- [ ] **Step 12: Run and commit Task 4**
 
 Add `ald_product_bundle` and `ald_product_verify` to `pyproject.toml`.
 
@@ -1138,9 +1147,9 @@ python -m pytest -q tests/test_product_verification.py tests/test_hls_verificati
 python -m py_compile ald_product_bundle.py ald_product_verify.py ald_hls_signature.py
 ```
 
-Expected: all product verification and existing HLS verification tests pass.
+Expected: all commands pass.
 
-- [ ] **Step 13: Commit Task 4**
+Commit:
 
 ```bash
 git add ald_product_bundle.py ald_product_verify.py ald_hls_signature.py tests/test_product_verification.py tests/test_hls_verification.py pyproject.toml
@@ -1149,51 +1158,52 @@ git commit -m "feat: verify signed product MP4 bundles"
 
 ---
 
-### Task 5: Product CLI, Transactional Publication, Documentation, and CI Acceptance
+### Task 5: CLI, Facade, Transactional Publication, Documentation, and CI
 
 **Files:**
 - Create: `tests/test_product_cli.py`
 - Create: `.github/workflows/product-mp4.yml`
 - Modify: `ald_media_cli.py`
-- Modify: `ald_media_controller.py` if facade exports need updating
+- Modify: `ald_media_controller.py`
 - Modify: `README.md`
 - Modify: `docs/majorana2-public-spec-reference.md`
-- Modify: `pyproject.toml` if a module was not already listed by Tasks 1-4
+- Modify: `pyproject.toml`
 
 **Interfaces:**
-- Produces CLI commands:
+
+- Adds:
   - `ald-media-controller compile-product RECIPE --output DIR [--seed N] [--overwrite] [--signing-key KEY]`
   - `ald-media-controller verify-product BUNDLE_JSON [--require-signature] [--trusted-public-key KEY]`
   - `ald-media-controller simulate-product BUNDLE_JSON --seed N --output DIR [--overwrite] [--require-signature] [--trusted-public-key KEY]`
-- `compile-product` uses render seed 42 when `--seed` is omitted.
-- Existing commands retain their current argument contract and behavior.
+- `compile-product` render seed defaults to 42.
+- Existing commands remain unchanged.
 
 - [ ] **Step 1: Write RED CLI parser tests**
 
-In `tests/test_product_cli.py`:
+Create `tests/test_product_cli.py`:
 
 ```python
 from ald_media_cli import build_parser
 
 
-def test_product_commands_are_explicit_and_do_not_change_existing_compile_default():
+def test_product_commands_are_explicit_and_legacy_compile_stays_legacy():
     parser = build_parser()
-    args = parser.parse_args([
+    product = parser.parse_args([
         "compile-product",
         "recipes/majorana2_public_specs_reference_sim.json",
         "--output",
         "build/product",
     ])
-    assert args.command == "compile-product"
-    assert args.seed == 42
+    assert product.command == "compile-product"
+    assert product.seed == 42
 
-    old = parser.parse_args([
+    legacy = parser.parse_args([
         "compile",
         "recipes/generic_al2o3.json",
         "--output",
         "build/hls",
     ])
-    assert old.command == "compile"
+    assert legacy.command == "compile"
 ```
 
 Run:
@@ -1202,28 +1212,17 @@ Run:
 python -m pytest -q tests/test_product_cli.py
 ```
 
-Expected: RED because product subcommands are absent.
+Expected: parser rejection for `compile-product`.
 
-- [ ] **Step 2: Add product subcommands to `build_parser()`**
+- [ ] **Step 2: Add the three explicit product subcommands**
 
-Add:
+Add `compile-product` with recipe, required output, integer `--seed` default 42, `--overwrite`, and `--signing-key`.
 
-```python
-compile_product = commands.add_parser(
-    "compile-product",
-    help="compile a public-reference product visualization with embedded verified instructions",
-)
-compile_product.add_argument("recipe", type=Path)
-compile_product.add_argument("--output", type=Path, required=True)
-compile_product.add_argument("--seed", type=int, default=42)
-compile_product.add_argument("--overwrite", action="store_true")
-compile_product.add_argument("--signing-key", type=Path)
-core._add_log_level(compile_product)
-```
+Add `verify-product` with bundle JSON path, `--require-signature`, and `--trusted-public-key`.
 
-Add equivalent `verify-product` and `simulate-product` parsers matching the interface above.
+Add `simulate-product` with bundle JSON path, required integer `--seed`, required output, `--overwrite`, `--require-signature`, and `--trusted-public-key`.
 
-Update the unexpected-exception fallback map so:
+Add unexpected-exception fallback mappings:
 
 ```python
 "compile-product": core.ExitCode.MEDIA
@@ -1231,86 +1230,90 @@ Update the unexpected-exception fallback map so:
 "simulate-product": core.ExitCode.CONTROLLER
 ```
 
-- [ ] **Step 3: Implement `_run_compile_product()` using the existing transactional publication pattern**
+- [ ] **Step 3: Implement `_run_compile_product()` using the existing safe publication lifecycle**
 
-Follow `_run_compile()`'s safe output lifecycle:
+Exact order:
 
-1. `_require_publishable_output()`.
-2. `_reject_recipe_output_overlap()`.
-3. load, validate, compile recipe.
-4. execute `SimulatedALDController().execute(compiled, seed)` and reject a faulted result.
-5. `probe_media_capabilities()` and `probe_product_mp4_capabilities()`.
-6. create a private build directory under the target parent.
-7. create candidate `bundle/`.
-8. render final scene and SVG views.
-9. stage raster/audio/data track sources.
-10. mux final `candidate/product.mp4`.
-11. write `candidate/recipe.canonical.json` with the existing canonical recipe writer.
-12. hash SVGs and create canonical `candidate/product.json`.
-13. write canonical `candidate/bundle.json`.
-14. optionally sign using `PRODUCT_BUNDLE_KEYS`.
-15. call `verify_product_bundle()` on the completed candidate.
-16. compare verified packet canonical bytes/digests/root with `compiled` and verified recipe bytes with the candidate canonical recipe bytes.
-17. publish using `_publish_verified_bundle()` only after all checks pass.
-18. always remove private build remnants in `finally`.
+1. resolve publishable target with `_require_publishable_output()`;
+2. reject recipe/output overlap;
+3. load, validate, and compile recipe;
+4. run deterministic simulation at render seed and reject any fault;
+5. probe generic media capabilities and product-MP4 capabilities;
+6. create private build root under target parent;
+7. create candidate `bundle` directory;
+8. build final product scene with simulation overlay;
+9. write `product-top.svg`, `product-stack.svg`, `product-final.svg`;
+10. stage product PNG/BFSK/data inputs outside candidate publication directory;
+11. mux `candidate/product.mp4`;
+12. write `candidate/recipe.canonical.json` with the existing canonical recipe writer;
+13. compute SVG digests, build `ProductDocument`, write canonical `candidate/product.json`;
+14. write `candidate/bundle.json`;
+15. if signing key is supplied, call `sign_bundle_index(..., expected_keys=PRODUCT_BUNDLE_KEYS)` and derive the temporary trusted public key with the existing helper;
+16. call `verify_product_bundle(candidate / "bundle.json")` with the appropriate signature requirement;
+17. compare verified packet canonical bytes/digests/root and canonical recipe bytes to the just-built inputs;
+18. atomically publish candidate with `_publish_verified_bundle()`;
+19. remove every private staging directory in `finally`.
 
-Do not publish `data.ts`, source PNGs, WAV staging files, or `packet-slots.bin`; those remain temporary build inputs.
+Do not publish `data.ts`, PNG source frames, checksum WAV, or `packet-slots.bin`.
 
-- [ ] **Step 4: Implement `_run_verify_product()` and `_run_simulate_product()`**
+- [ ] **Step 4: Implement verify/simulate product orchestration**
 
-`_run_verify_product()` calls the product verifier and prints canonical compact JSON containing:
+`_run_verify_product()` prints canonical compact JSON:
 
 ```python
-{
-    "protocol": "ALD-PRODUCT/1",
-    "packet_count": len(verified.packets),
-    "root_hash": verified.root_hash.hex(),
-    "render_seed": verified.render_seed,
-    "signature_status": verified.signature_status.value,
+payload = {
     "media_type": "product-mp4",
+    "packet_count": len(verified.packets),
+    "protocol": "ALD-PRODUCT/1",
+    "render_seed": verified.render_seed,
+    "root_hash": verified.root_hash.hex(),
+    "signature_status": verified.signature_status.value,
 }
 ```
 
-`_run_simulate_product()`:
+`_run_simulate_product()` verifies `bundle.json`, reuses `_bind_verified_recipe()` because `VerifiedProductRecipe` exposes `packets`, `root_hash`, and `recipe_bytes`, rejects output overlap, executes the deterministic simulator with the requested seed, and publishes existing reports.
 
-1. verifies `bundle.json`;
-2. reuses `_bind_verified_recipe(verified)` because `VerifiedProductRecipe` exposes the same `packets`, `root_hash`, and `recipe_bytes` attributes;
-3. rejects output overlap with the product bundle directory;
-4. executes `SimulatedALDController().execute(compiled, seed)`;
-5. publishes reports with existing `core.publish_reports()`.
+Execution seed may differ from render seed; docs must state that the visual numeric overlay represents only the compile-time render seed.
 
-Execution seed remains a simulator input and may differ from the compile-time `render_seed`; documentation must say the product video's numeric overlay represents the compile-time render seed only.
+- [ ] **Step 5: Re-export product APIs through `ald_media_controller.py`**
 
-- [ ] **Step 5: Add real CLI end-to-end acceptance test**
+Import all seven product modules beside the existing sibling imports. Re-export these public groups through `setattr(_core, name, ...)` loops:
 
-Mark with `requires_ffmpeg` and run the installed-style `main()` path or subprocess console script. The test sequence is:
+- scene/document dataclasses and scene/document builders/parsers;
+- SVG render/write functions;
+- data record/slot functions and constants;
+- product track staging functions/dataclasses;
+- product MP4 capability/mux/probe/extract functions/dataclasses;
+- product bundle key constant and writer;
+- product `VerifiedProductRecipe` and `verify_product_bundle`.
+
+Also re-export `decode_canonical_packet_bytes` and `validate_hashed_packet` from `ald_media_codecs`.
+
+Keep `_core.build_parser = _cli.build_parser`, `_core.main = _cli.main`, and module aliasing behavior unchanged.
+
+- [ ] **Step 6: Add real CLI end-to-end test**
+
+Mark the acceptance test `requires_ffmpeg`. Run:
 
 ```bash
 ald-media-controller compile-product \
   recipes/majorana2_public_specs_reference_sim.json \
   --seed 42 \
   --output build/product-acceptance/bundle
-
-ald-media-controller verify-product \
-  build/product-acceptance/bundle/bundle.json
-
+ald-media-controller verify-product build/product-acceptance/bundle/bundle.json
 ald-media-controller simulate \
   recipes/majorana2_public_specs_reference_sim.json \
   --seed 42 \
   --output build/product-acceptance/direct
-
 ald-media-controller simulate-product \
   build/product-acceptance/bundle/bundle.json \
   --seed 42 \
   --output build/product-acceptance/product
-
-cmp build/product-acceptance/direct/cycles.csv \
-    build/product-acceptance/product/cycles.csv
-cmp build/product-acceptance/direct/surface-final.json \
-    build/product-acceptance/product/surface-final.json
+cmp build/product-acceptance/direct/cycles.csv build/product-acceptance/product/cycles.csv
+cmp build/product-acceptance/direct/surface-final.json build/product-acceptance/product/surface-final.json
 ```
 
-The test also requires these published files and no QR/HLS requirement inside the product bundle:
+Require published files exactly include the seven product artifacts plus any ordinary filesystem metadata, with these required names:
 
 ```text
 product.mp4
@@ -1322,28 +1325,30 @@ recipe.canonical.json
 bundle.json
 ```
 
-`stream.m3u8` must not be required or generated by `compile-product`.
+Require no `stream.m3u8` in a product bundle.
 
-- [ ] **Step 6: Add QR compatibility regression in the same branch**
+- [ ] **Step 7: Run legacy QR/HLS regression from the same implementation head**
 
-Run the unchanged existing path:
+Run:
 
 ```bash
 ald-media-controller compile recipes/generic_al2o3.json --output build/qr-regression/bundle
 ald-media-controller verify build/qr-regression/bundle/stream.m3u8
-ald-media-controller simulate-media build/qr-regression/bundle/stream.m3u8 --seed 42 --output build/qr-regression/media
+ald-media-controller simulate-media \
+  build/qr-regression/bundle/stream.m3u8 \
+  --seed 42 \
+  --output build/qr-regression/media
 ```
 
-This must remain green with no product artifacts required by the legacy verifier.
+Expected: unchanged behavior and successful verification/simulation.
 
-- [ ] **Step 7: Add dedicated product CI workflow**
+- [ ] **Step 8: Add dedicated product CI workflow**
 
-Create `.github/workflows/product-mp4.yml` with Python 3.11, Ubuntu latest, apt-installed FFmpeg, and `pip install -e '.[test,signature]'`.
+Create `.github/workflows/product-mp4.yml` using Ubuntu latest, Python 3.11, apt-installed FFmpeg, and `python -m pip install -e '.[test,signature]'`.
 
-The workflow must run:
+Run full pytest, then compile exactly these modules:
 
 ```bash
-python -m pytest -q
 python -m py_compile \
   ald_core.py \
   ald_hardened_core.py \
@@ -1366,11 +1371,11 @@ python -m py_compile \
   ald_product_verify.py
 ```
 
-Then run the end-to-end command sequence from Step 5 and byte-compare direct/product simulation reports.
+Then execute the Task 5 Step 6 product acceptance sequence and byte comparisons.
 
-- [ ] **Step 8: Update README product-mode documentation**
+- [ ] **Step 9: Document the mode contract**
 
-Add a mode comparison table:
+README mode table:
 
 | Mode | Human visual | Executable source | Independent checksum | Container |
 | --- | --- | --- | --- | --- |
@@ -1378,23 +1383,11 @@ Add a mode comparison table:
 | QR media | QR instruction frame | decoded QR bytes | BFSK audio | HLS/fMP4 |
 | Product MP4 | Majorana 2 schematic product stage | MP4 `bin_data/gpmd` slots | BFSK audio | single MP4 bundle |
 
-Add the exact compile/verify/simulate-product commands from Step 5.
+Document the exact commands from Step 6. State that `gpmd` is the FFmpeg/MP4 transport tag for `bin_data`; the bytes themselves use repository-defined `ALDP` version-1 slots and are not GoPro GPMF telemetry. State that video is display-only and cannot be executed via OCR.
 
-State explicitly that `gpmd` is used as the FFmpeg/MP4 `bin_data` transport tag; the payload itself is the repository's `ALDP` version-1 slot format, not GoPro GPMF telemetry.
+Update `docs/majorana2-public-spec-reference.md` to distinguish public reference metadata, schematic presentation coordinates, synthetic A/B simulator overlay, and executable canonical ALD-MEDIA/1 surrogate packets. Preserve the explicit excluded-process list and `physical_fabrication_mapping=false` statement.
 
-State that the video track is display-only and cannot be executed through OCR.
-
-- [ ] **Step 9: Update Majorana 2 reference documentation**
-
-In `docs/majorana2-public-spec-reference.md`, document:
-
-- H-shaped tetron/gates/dots/material stack are public-reference visualization metadata;
-- unknown barrier/buffer/process fields remain unspecified;
-- normalized SVG/Pillow drawing coordinates are schematic presentation coordinates, not fabrication dimensions;
-- the generic A/B simulator overlay is synthetic and `physical_fabrication_mapping` remains false;
-- product-MP4 instruction bytes are the same canonical ALD-MEDIA/1 surrogate packets already used by direct/QR modes.
-
-- [ ] **Step 10: Run the complete local verification matrix**
+- [ ] **Step 10: Run the complete verification matrix**
 
 Run:
 
@@ -1404,17 +1397,15 @@ python -m py_compile \
   ald_core.py ald_hardened_core.py ald_media_codecs.py ald_media_staging.py \
   ald_compression.py ald_media_controller.py ald_media_cli.py \
   ald_hls_integration.py ald_hls_packaging.py ald_hls_bundle.py \
-  ald_hls_signature.py ald_hls_verify.py \
-  ald_product_scene.py ald_product_svg.py ald_product_data.py \
-  ald_product_render.py ald_product_mp4.py ald_product_bundle.py \
-  ald_product_verify.py
+  ald_hls_signature.py ald_hls_verify.py ald_product_scene.py \
+  ald_product_svg.py ald_product_data.py ald_product_render.py \
+  ald_product_mp4.py ald_product_bundle.py ald_product_verify.py
 ```
 
-Then manually run both end-to-end modes:
+Then run both final acceptance paths:
 
 ```bash
 rm -rf build/final-product-check build/final-qr-check
-
 ald-media-controller compile-product \
   recipes/majorana2_public_specs_reference_sim.json \
   --seed 42 \
@@ -1430,35 +1421,17 @@ ald-media-controller simulate-product \
   --output build/final-product-check/media
 cmp build/final-product-check/direct/cycles.csv build/final-product-check/media/cycles.csv
 cmp build/final-product-check/direct/surface-final.json build/final-product-check/media/surface-final.json
-
 ald-media-controller compile recipes/generic_al2o3.json --output build/final-qr-check/bundle
 ald-media-controller verify build/final-qr-check/bundle/stream.m3u8
 ```
 
-Expected: every command exits 0, both direct/product report comparisons are byte-identical, and legacy QR verification still succeeds.
-
-- [ ] **Step 11: Inspect the final MP4 independently with ffprobe**
-
-Run:
+Inspect final streams:
 
 ```bash
 ffprobe -v error \
   -show_entries stream=index,codec_type,codec_name,codec_tag_string,width,height,sample_rate,channels \
   -of json \
   build/final-product-check/bundle/product.mp4
-```
-
-Expected stream set:
-
-```text
-video: h264, 1920x1080
-audio: aac, 48000 Hz, mono
-data:  bin_data, codec tag gpmd
-```
-
-Then inspect data packet timing:
-
-```bash
 ffprobe -v error \
   -select_streams d:0 \
   -show_packets \
@@ -1467,15 +1440,14 @@ ffprobe -v error \
   build/final-product-check/bundle/product.mp4
 ```
 
-Expected: one 1024-byte packet per canonical instruction at 3-second intervals, no guard packet.
+Expected: one H.264 1920x1080 video stream, one mono 48 kHz AAC stream, one `bin_data/gpmd` data stream, one 1024-byte data packet per canonical instruction at three-second intervals, and no guard packet.
 
-- [ ] **Step 12: Commit Task 5**
+- [ ] **Step 11: Commit Task 5**
 
 ```bash
-git add \
-  ald_media_cli.py ald_media_controller.py pyproject.toml \
-  tests/test_product_cli.py .github/workflows/product-mp4.yml \
-  README.md docs/majorana2-public-spec-reference.md
+git add ald_media_cli.py ald_media_controller.py tests/test_product_cli.py \
+  .github/workflows/product-mp4.yml README.md \
+  docs/majorana2-public-spec-reference.md pyproject.toml
 git commit -m "feat: add verified Majorana 2 product MP4 mode"
 ```
 
@@ -1483,16 +1455,15 @@ git commit -m "feat: add verified Majorana 2 product MP4 mode"
 
 ## Final Review Gate
 
-Before opening or merging the implementation PR:
+Before merging the implementation PR:
 
-- run the complete test/compile/end-to-end matrix in Task 5;
-- confirm `git diff main...HEAD -- recipes/majorana2_public_specs_reference_sim.json` does not add physical fabrication parameters;
-- confirm the product verifier never calls `decode_instruction_frame()` or OCR;
-- confirm the legacy HLS verifier still accepts bundles produced by the unchanged `compile` command;
-- confirm product bundle verification rejects modified video, audio, data, product JSON, SVG, recipe, and manifest artifacts;
-- confirm the final product MP4 visibly contains the H-tetron, gate layers, quantum-dot labels, and material-stack view;
+- run the complete Task 5 verification matrix on the exact head;
+- confirm the Majorana 2 reference recipe gained no physical fabrication parameters;
+- confirm product verification never calls QR decoding or OCR;
+- confirm the unchanged QR/HLS commands remain green;
+- confirm product verification rejects modified video, audio, data, product JSON, SVG, recipe, and manifest artifacts;
+- inspect the final visual to confirm H-tetron geometry, gate bands, five quantum-dot labels, and material stack are visible;
 - confirm `product.json` contains `physical_fabrication_mapping:false`;
-- confirm `ffprobe` reports exactly one H.264 video stream, one AAC audio stream, and one `bin_data/gpmd` data stream;
-- confirm direct/product simulation reports are byte-identical at seed 42.
-
-When all checks are green, request code review on the exact verified head before merge.
+- confirm ffprobe reports exactly one H.264 video, one AAC audio, and one `bin_data/gpmd` data stream;
+- confirm direct/product simulation reports are byte-identical at seed 42;
+- request code review on the exact verified head before merge.
