@@ -16,7 +16,9 @@ from typing import Any
 
 import ald_hardened_core as core
 from ald_hls_integration import MediaBuildError, MediaCapabilities, run_media_tool
+import ald_media_codecs as media
 import ald_product_data as product_data
+import ald_product_render as product_render
 
 
 _FFMPEG_TIMEOUT_SECONDS = 120.0
@@ -354,6 +356,143 @@ def _mux_probe_mp4(
         ]
     )
     run_media_tool(args, timeout_seconds=_FFMPEG_TIMEOUT_SECONDS)
+
+
+def _validate_product_sources(
+    sources: product_render.ProductTrackSources,
+    profile: media.MediaProfile,
+) -> tuple[tuple[Path, ...], Path, Path]:
+    if type(sources) is not product_render.ProductTrackSources:
+        raise MediaBuildError("product MP4 sources must be an exact ProductTrackSources value")
+    if type(profile) is not media.MediaProfile:
+        raise MediaBuildError("product MP4 profile must be an exact MediaProfile value")
+    if profile.width != _PRODUCT_WIDTH or profile.height != _PRODUCT_HEIGHT:
+        raise MediaBuildError("product MP4 profile must be 1920x1080")
+    if profile.sample_rate != _PRODUCT_SAMPLE_RATE or profile.interval_seconds != 3.0:
+        raise MediaBuildError("product MP4 profile must use 48 kHz and 3.0-second intervals")
+    if not sources.frame_paths:
+        raise MediaBuildError("product MP4 requires at least one staged frame")
+    expected_duration = len(sources.frame_paths) * profile.interval_seconds
+    if abs(sources.duration_seconds - expected_duration) > _TIMING_TOLERANCE_SECONDS:
+        raise MediaBuildError("product MP4 staged duration does not match frame count")
+
+    frames: list[Path] = []
+    frame_parent: Path | None = None
+    for sequence, frame in enumerate(sources.frame_paths):
+        path = _require_regular_file(frame, f"product frame {sequence}")
+        if path.name != f"frame-{sequence:06d}.png":
+            raise MediaBuildError("product MP4 frame names must be contiguous and zero-based")
+        if frame_parent is None:
+            frame_parent = path.parent
+        elif path.parent != frame_parent:
+            raise MediaBuildError("product MP4 frames must share one staging directory")
+        frames.append(path)
+
+    audio_path = _require_regular_file(sources.audio_path, "product BFSK WAV")
+    data_path = _require_regular_file(sources.data_path, "product data slot stream")
+    raw_data = data_path.read_bytes()
+    expected_data_bytes = (len(frames) + 1) * product_data.DATA_SLOT_BYTES
+    if len(raw_data) != expected_data_bytes:
+        raise MediaBuildError("product data slot stream must contain one guarded slot per frame plus guard")
+    if raw_data[-product_data.DATA_SLOT_BYTES :] != bytes(product_data.DATA_SLOT_BYTES):
+        raise MediaBuildError("product data slot stream is missing the all-zero guard slot")
+    return tuple(frames), audio_path, data_path
+
+
+def mux_product_mp4(
+    sources: product_render.ProductTrackSources,
+    destination: Path,
+    capabilities: MediaCapabilities,
+    profile: media.MediaProfile,
+) -> Path:
+    """Mux staged product tracks into one fail-closed H.264/AAC/gpmd MP4."""
+    _require_capabilities(capabilities)
+    frames, audio_path, data_path = _validate_product_sources(sources, profile)
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        raise MediaBuildError(f"product MP4 destination already exists: {target}")
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="ald-product-mp4-mux-") as temporary:
+            root = Path(temporary)
+            data_ts = root / "product-data.ts"
+            extracted = root / "product-data.extracted.bin"
+            _stage_probe_data(capabilities, data_path, data_ts)
+
+            frame_pattern = frames[0].parent / "frame-%06d.png"
+            args = [
+                str(capabilities.ffmpeg),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-framerate",
+                "1/3",
+                "-start_number",
+                "0",
+                "-i",
+                str(frame_pattern),
+                "-i",
+                str(audio_path),
+                "-i",
+                str(data_ts),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-map",
+                "2:d:0",
+                "-c:v",
+                capabilities.video_encoder,
+            ]
+            if capabilities.video_encoder == "libx264":
+                args.extend(["-preset", "ultrafast"])
+            args.extend(
+                [
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    capabilities.audio_encoder,
+                    "-b:a",
+                    "128k",
+                    "-ar",
+                    str(_PRODUCT_SAMPLE_RATE),
+                    "-ac",
+                    str(_PRODUCT_CHANNELS),
+                    "-c:d",
+                    "copy",
+                    "-copy_unknown",
+                    "-tag:d:0",
+                    _DATA_TAG,
+                    "-metadata:s:d:0",
+                    f"handler_name={_DATA_HANDLER}",
+                    "-f",
+                    "mp4",
+                    "-y",
+                    str(target),
+                ]
+            )
+            run_media_tool(args, timeout_seconds=_FFMPEG_TIMEOUT_SECONDS)
+
+            probe_product_mp4(
+                target,
+                capabilities,
+                packet_count=len(frames),
+                interval_seconds=profile.interval_seconds,
+            )
+            extract_product_data(target, extracted, capabilities)
+            authoritative = data_path.read_bytes()[: -product_data.DATA_SLOT_BYTES]
+            if extracted.read_bytes() != authoritative:
+                raise MediaBuildError("product MP4 data track does not round-trip authoritative slot bytes")
+            _require_regular_file(target, "product MP4")
+            return target
+    except BaseException:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def probe_product_mp4_capabilities(capabilities: MediaCapabilities) -> None:
