@@ -1,6 +1,7 @@
 from pathlib import Path
 import hashlib
 import json
+import shutil
 
 import pytest
 
@@ -42,6 +43,19 @@ def _compiled_majorana() -> core.CompiledRecipe:
 
 def _canonical_recipe_bytes() -> bytes:
     value = json.loads(RECIPE.read_text(encoding="utf-8"))
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _canonical_json(value) -> bytes:
     return (
         json.dumps(
             value,
@@ -136,6 +150,71 @@ def _build_real_product_bundle(root: Path) -> tuple[Path, core.CompiledRecipe, b
     return index_path, compiled, recipe_bytes, product_bytes
 
 
+@pytest.fixture(scope="module")
+def real_product_bundle(tmp_path_factory):
+    return _build_real_product_bundle(tmp_path_factory.mktemp("real-product-bundle"))
+
+
+def _copy_real_bundle(real_product_bundle, destination: Path) -> Path:
+    source_index, _, _, _ = real_product_bundle
+    copied_root = shutil.copytree(source_index.parent, destination)
+    return copied_root / "bundle.json"
+
+
+def _replace_audio_with_silence(index_path: Path) -> None:
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    product_path = index_path.parent / "product.mp4"
+    replacement = index_path.parent / "replacement.mp4"
+    capabilities = hls.probe_media_capabilities()
+    duration = len(payload["packets"]) * media.DEFAULT_MEDIA_PROFILE.interval_seconds
+    hls.run_media_tool(
+        [
+            str(capabilities.ffmpeg),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-i",
+            str(product_path),
+            "-f",
+            "lavfi",
+            "-i",
+            f"anullsrc=r=48000:cl=mono:d={duration:g}",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-map",
+            "0:d:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            capabilities.audio_encoder,
+            "-b:a",
+            "128k",
+            "-ar",
+            "48000",
+            "-ac",
+            "1",
+            "-c:d",
+            "copy",
+            "-copy_unknown",
+            "-tag:d:0",
+            "gpmd",
+            "-metadata:s:d:0",
+            "handler_name=ALD Instruction Data",
+            "-movflags",
+            "+faststart",
+            "-y",
+            str(replacement),
+        ],
+        timeout_seconds=120.0,
+    )
+    replacement.replace(product_path)
+    payload["product"]["sha256"] = hashlib.sha256(product_path.read_bytes()).hexdigest()
+    index_path.write_bytes(_canonical_json(payload))
+
+
 def test_bundle_signature_accepts_explicit_exact_schema(tmp_path):
     expected_keys = frozenset({"protocol", "signature"})
     index_path = tmp_path / "bundle.json"
@@ -190,16 +269,7 @@ def test_product_bundle_index_binds_fixed_artifacts_and_packet_timeline(tmp_path
     assert result == destination
     raw = destination.read_bytes()
     payload = json.loads(raw)
-    assert raw == (
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-    ).encode("utf-8")
+    assert raw == _canonical_json(payload)
     assert set(payload) == product_bundle.PRODUCT_BUNDLE_KEYS
     assert payload["protocol"] == "ALD-MEDIA/1"
     assert payload["media_type"] == "product-mp4"
@@ -248,8 +318,8 @@ def test_product_bundle_index_binds_fixed_artifacts_and_packet_timeline(tmp_path
 
 
 @pytest.mark.requires_ffmpeg
-def test_verify_product_bundle_recovers_exact_compiled_stream(tmp_path):
-    index_path, compiled, recipe_bytes, product_bytes = _build_real_product_bundle(tmp_path)
+def test_verify_product_bundle_recovers_exact_compiled_stream(real_product_bundle):
+    index_path, compiled, recipe_bytes, product_bytes = real_product_bundle
 
     verified = product_verify.verify_product_bundle(index_path)
 
@@ -260,3 +330,15 @@ def test_verify_product_bundle_recovers_exact_compiled_stream(tmp_path):
     assert verified.recipe_bytes == recipe_bytes
     assert verified.product_bytes == product_bytes
     assert verified.render_seed == 42
+
+
+@pytest.mark.requires_ffmpeg
+def test_verify_product_bundle_rejects_silent_audio_even_with_updated_mp4_digest(
+    tmp_path,
+    real_product_bundle,
+):
+    index_path = _copy_real_bundle(real_product_bundle, tmp_path / "bundle")
+    _replace_audio_with_silence(index_path)
+
+    with pytest.raises(product_verify.IntegrityError, match="audio witness"):
+        product_verify.verify_product_bundle(index_path)
