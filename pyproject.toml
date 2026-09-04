@@ -38,6 +38,7 @@ py-modules = [
   "ald_product_svg",
   "ald_product_data",
   "ald_product_render",
+  "ald_product_mp4",
 ]
 
 [tool.pytest.ini_options]
