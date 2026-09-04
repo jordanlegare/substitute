@@ -1,0 +1,174 @@
+{
+  "protocol": "ALD-MEDIA/1",
+  "recipe_id": "majorana2-public-spec-reference-sim-001",
+  "metadata": {
+    "reference_target": "Microsoft Majorana 2 public 2026 tetron architecture",
+    "reference_status": "Public-spec reference model. Reported device values are metadata only; this is not a fabrication recipe.",
+    "scientific_caveat": "Topological and Majorana interpretation is an active research topic; reported device metrics are represented here as source-attributed reference data, not independently validated claims.",
+    "simulation_mapping": {
+      "executable_scope": "generic A/B interface-deposition surrogate only",
+      "physical_fabrication_mapping": false,
+      "surrogate_cycle_count_has_no_fabrication_mapping": true,
+      "abstract_regions": [
+        {"region": 0, "reference_role": "upper proximitized horizontal nanowire"},
+        {"region": 1, "reference_role": "lower proximitized horizontal nanowire"},
+        {"region": 2, "reference_role": "superconducting backbone"},
+        {"region": 3, "reference_role": "gate and quantum-dot readout interface"}
+      ]
+    },
+    "public_device_reference": {
+      "material_stack": {
+        "substrate": "GaSb",
+        "buffer": {"composition": "not publicly specified in cited paper text"},
+        "bottom_barrier": {"composition": "not publicly specified", "thickness_nm": null},
+        "quantum_well": [
+          {"material": "InAs", "thickness_nm": 6.0},
+          {"material": "InAs0.8Sb0.2", "thickness_nm": 2.0}
+        ],
+        "top_barrier": {"composition": "not publicly specified", "thickness_nm": null},
+        "superconductor": {"material": "Pb", "thickness_nm": 10.0}
+      },
+      "tetron_geometry": {
+        "shape": "H-shaped superconducting island",
+        "horizontal_nanowires": 2,
+        "horizontal_nanowire_length_um": 3.5,
+        "horizontal_nanowire_width_nm": 35.0,
+        "backbone_length_um": 1.0,
+        "backbone_width_nm": 20.0,
+        "target_majorana_zero_modes_per_tetron": 4
+      },
+      "gate_architecture": {
+        "functional_gate_layers": 3,
+        "functions": [
+          "electrostatic nanowire-density tuning",
+          "junction and cutter tunnel-coupling control",
+          "gate-defined quantum-dot dispersive parity readout"
+        ],
+        "quantum_dots_per_tetron": 5,
+        "shared_quantum_dots_with_vertical_neighbors": 3,
+        "quantum_dot_reference": {
+          "plunger_lever_arm_mev_per_mv_range": [0.4, 0.45],
+          "charging_energy_uev_greater_than": 60.0,
+          "level_spacing_uev_greater_than": 30.0,
+          "long_quantum_dot_length_um_approx": 3.2,
+          "qd1_exterior_linear_gate_extent_um": 2.1,
+          "qd2_interior_linear_gate_extent_um": 2.4,
+          "qd3_exterior_linear_gate_extent_um": 0.9,
+          "qd4_interior_linear_gate_extent_um": 1.2
+        }
+      },
+      "reported_material_and_device_metrics": {
+        "pb_parent_gap_mev_approx": 1.3,
+        "nanowire_induced_gap_uev_approx": 570.0,
+        "top_quintile_topological_gap_uev_approx": 70.0,
+        "spin_orbit_coupling_mev_nm_text_range": [12.0, 16.0],
+        "spin_orbit_coupling_mev_nm_extracted": {"value": 12.0, "uncertainty": 2.0},
+        "density_1e12_cm2": {"value": 0.49, "uncertainty": 0.02},
+        "quantum_lifetime_ps": {"value": 0.37, "uncertainty": 0.14},
+        "buried_quantum_well_mobility_cm2_per_vs_greater_than": 350000.0,
+        "tgp_region_mv_t_greater_than": 1.1,
+        "representative_zero_bias_peak_field_span_t_greater_than": 0.5,
+        "localization_length_um_greater_than": 1.0,
+        "majorana_splitting_resolution_uev_upper_bound": 1.0,
+        "z_parity_lifetime_s": {"value": 22.0, "uncertainty": 1.0},
+        "typical_qubit_operation_time_us_approx": 1.0
+      }
+    },
+    "sources": [
+      {
+        "title": "20 Second Parity Lifetime in an InAs-Pb Tetron Device",
+        "url": "https://arxiv.org/abs/2606.03884",
+        "publication_date": "2026-06-02"
+      },
+      {
+        "title": "Majorana 2 - Microsoft's scalable quantum processor with reliable, long-lasting qubits",
+        "url": "https://quantum.microsoft.com/en-us/insights/blogs/majorana-2-scalable-quantum-processor",
+        "publication_date": "2026-06-02"
+      }
+    ],
+    "excluded_process_details": [
+      "epitaxial growth conditions",
+      "undisclosed barrier composition or thickness",
+      "precursor chemistry",
+      "lithography resist and exposure recipes",
+      "etch chemistry and timing",
+      "metal deposition conditions",
+      "cryogenic operating setpoints",
+      "equipment-specific process recipes"
+    ]
+  },
+  "precursors": {
+    "A": {"label": "public-reference-interface-A-sim"},
+    "B": {"label": "public-reference-interface-B-sim"}
+  },
+  "initial_conditions": {
+    "temperature_c": 25.0,
+    "pressure_pa": 101325.0
+  },
+  "limits": {
+    "min_purge_ms": 1000,
+    "max_temperature_c": 150.0,
+    "max_pressure_pa": 150000.0,
+    "max_cycles": 128,
+    "max_runtime_ms": 900000,
+    "max_residual_fraction": 0.01,
+    "max_packet_bytes": 800
+  },
+  "surface": {
+    "model_version": "site-binomial/1",
+    "regions": 4,
+    "sites_per_region": 250000,
+    "transport_factors": [1.0, 1.0, 1.0, 1.0],
+    "blocked_fraction": 0.005,
+    "defect_fraction": 0.002,
+    "k_a": 1.2,
+    "k_b": 1.15,
+    "growth_nm_per_reaction_fraction": 0.08,
+    "purge_half_life_ms": 700,
+    "max_event_samples": 64
+  },
+  "instructions": [
+    {"opcode": "CONFIGURE", "arguments": {}},
+    {
+      "opcode": "SET_TEMPERATURE",
+      "arguments": {
+        "target_c": 80.0,
+        "ramp_c_per_min": 20.0,
+        "tolerance_c": 1.0
+      }
+    },
+    {
+      "opcode": "EVACUATE",
+      "arguments": {
+        "target_pa": 1000.0,
+        "timeout_ms": 120000
+      }
+    },
+    {"opcode": "STABILIZE", "arguments": {"duration_ms": 10000}},
+    {
+      "opcode": "ALD_CYCLE",
+      "arguments": {
+        "precursor_a": "A",
+        "pulse_a_ms": 100,
+        "purge_a_ms": 5000,
+        "precursor_b": "B",
+        "pulse_b_ms": 100,
+        "purge_b_ms": 5000,
+        "repeat": 32
+      }
+    },
+    {
+      "opcode": "MEASURE",
+      "arguments": {
+        "measurements": ["thickness_nm", "coverage", "defect_fraction"]
+      }
+    },
+    {
+      "opcode": "SHUTDOWN",
+      "arguments": {
+        "heater_ramp_c_per_min": 20.0,
+        "vent_target_pa": 101325.0
+      }
+    }
+  ]
+}
