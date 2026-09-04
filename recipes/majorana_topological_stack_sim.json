@@ -1,0 +1,99 @@
+{
+  "protocol": "ALD-MEDIA/1",
+  "recipe_id": "majorana-topological-stack-sim-001",
+  "metadata": {
+    "device_concept": "Majorana-inspired topological qubit interface stack",
+    "modeled_scope": "abstract dielectric/interface deposition only",
+    "conceptual_regions": [
+      "semiconductor interface",
+      "proximitized superconducting region",
+      "gate dielectric region",
+      "isolation region"
+    ],
+    "simulation_notice": "All chemistry labels and process values are synthetic simulator inputs. This recipe is not a fabrication process for a functioning Majorana device.",
+    "excluded_processes": [
+      "real material growth",
+      "epitaxy",
+      "lithography",
+      "etching",
+      "metallization",
+      "superconductor deposition",
+      "hazardous chemical handling",
+      "equipment operation"
+    ]
+  },
+  "precursors": {
+    "A": {"label": "interface-reactant-A-sim"},
+    "B": {"label": "interface-reactant-B-sim"}
+  },
+  "initial_conditions": {
+    "temperature_c": 25.0,
+    "pressure_pa": 101325.0
+  },
+  "limits": {
+    "min_purge_ms": 1000,
+    "max_temperature_c": 150.0,
+    "max_pressure_pa": 150000.0,
+    "max_cycles": 128,
+    "max_runtime_ms": 900000,
+    "max_residual_fraction": 0.01,
+    "max_packet_bytes": 800
+  },
+  "surface": {
+    "model_version": "site-binomial/1",
+    "regions": 4,
+    "sites_per_region": 250000,
+    "transport_factors": [0.98, 1.0, 1.0, 0.98],
+    "blocked_fraction": 0.005,
+    "defect_fraction": 0.002,
+    "k_a": 1.2,
+    "k_b": 1.15,
+    "growth_nm_per_reaction_fraction": 0.08,
+    "purge_half_life_ms": 700,
+    "max_event_samples": 64
+  },
+  "instructions": [
+    {"opcode": "CONFIGURE", "arguments": {}},
+    {
+      "opcode": "SET_TEMPERATURE",
+      "arguments": {
+        "target_c": 80.0,
+        "ramp_c_per_min": 20.0,
+        "tolerance_c": 1.0
+      }
+    },
+    {
+      "opcode": "EVACUATE",
+      "arguments": {
+        "target_pa": 1000.0,
+        "timeout_ms": 120000
+      }
+    },
+    {"opcode": "STABILIZE", "arguments": {"duration_ms": 10000}},
+    {
+      "opcode": "ALD_CYCLE",
+      "arguments": {
+        "precursor_a": "A",
+        "pulse_a_ms": 100,
+        "purge_a_ms": 5000,
+        "precursor_b": "B",
+        "pulse_b_ms": 100,
+        "purge_b_ms": 5000,
+        "repeat": 32
+      }
+    },
+    {
+      "opcode": "MEASURE",
+      "arguments": {
+        "measurements": ["thickness_nm", "coverage", "defect_fraction"]
+      }
+    },
+    {
+      "opcode": "SHUTDOWN",
+      "arguments": {
+        "heater_ramp_c_per_min": 20.0,
+        "vent_target_pa": 101325.0
+      }
+    }
+  ]
+}
