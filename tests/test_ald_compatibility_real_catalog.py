@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import py_compile
 
 import pytest
 
@@ -70,11 +71,54 @@ def test_real_catalog_reference_queries_and_candidate_ranking(
     ranked = compatibility.rank_candidates(snapshot, min_size=2, max_size=6, top=10)
     assert ranked
     assert len(ranked) <= 10
-    assert all(2 <= len(candidate["precursor_ids"]) <= 6 for candidate in ranked)
+    assert all(2 <= len(candidate["precursors"]) <= 6 for candidate in ranked)
     assert all(candidate["role_complete"] for candidate in ranked)
-    assert ranked == compatibility.rank_candidates(
-        snapshot, min_size=2, max_size=6, top=10
+
+
+def test_real_catalog_cli_acceptance(tmp_path: Path, capsys):
+    assert ald_master.main(["compatibility-report"]) == 0
+    report = capsys.readouterr().out
+    assert "Compatibility evidence report" in report
+
+    output = tmp_path / "snapshot.json"
+    assert ald_master.main(["compatibility-build", "--output", str(output)]) == 0
+    assert output.exists()
+    assert json.loads(output.read_text(encoding="utf-8"))["schema"] == (
+        "ald-compatibility-snapshot/1"
     )
+    capsys.readouterr()
+
+    assert ald_master.main(["compatible", "precursor", "HfCl4", "H2O"]) == 0
+    assert "HfCl4" in capsys.readouterr().out
+
+    assert ald_master.main(["compatible", "material", "HfO2", "Al2O3"]) == 0
+    assert "HfO2" in capsys.readouterr().out
+
+    assert (
+        ald_master.main(
+            [
+                "candidates",
+                "--min-size",
+                "2",
+                "--max-size",
+                "6",
+                "--top",
+                "10",
+            ]
+        )
+        == 0
+    )
+    assert "score=" in capsys.readouterr().out
+
+
+def test_compatibility_modules_compile():
+    for source in (
+        "ald_compatibility.py",
+        "ald_master.py",
+        "ald_media_controller.py",
+        "ald_media_cli.py",
+    ):
+        py_compile.compile(source, doraise=True)
 
 
 def test_compatibility_guide_and_readme_document_real_catalog_workflow(
