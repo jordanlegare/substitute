@@ -23,6 +23,7 @@ ald-media-controller = "ald_media_controller:main"
 [tool.setuptools]
 py-modules = [
   "ald_core",
+  "_ald_legacy_core",
   "ald_hardened_core",
   "ald_media_codecs",
   "ald_media_staging",
