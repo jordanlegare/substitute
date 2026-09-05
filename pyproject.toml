@@ -53,7 +53,9 @@ py-modules = [
   "ald_product_verify",
   "ald_product_cli",
   "ald_master",
+  "ald_compatibility",
 ]
+packages = ["ald_compatibility", "ald_master"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
