@@ -348,11 +348,18 @@ def _verify_recipe(
     root_hash: bytes,
 ) -> core.CompiledRecipe:
     _canonical_recipe_bytes(recipe_bytes)
+    if recipe_path.name != _FIXED_NAMES["recipe"]:
+        raise IntegrityError("product recipe path is not the fixed bundle filename")
     try:
-        recipe = core.validate_recipe(core.load_recipe(recipe_path))
-        compiled = core.compile_recipe(recipe)
+        with tempfile.TemporaryDirectory(prefix="ald-product-recipe-verify-") as temporary:
+            trusted_recipe_path = Path(temporary) / _FIXED_NAMES["recipe"]
+            trusted_recipe_path.write_bytes(recipe_bytes)
+            recipe = core.validate_recipe(core.load_recipe(trusted_recipe_path))
+            compiled = core.compile_recipe(recipe)
     except core.ALDError as error:
         raise IntegrityError(f"product recipe cannot be validated and compiled: {error}") from error
+    except OSError as error:
+        raise IntegrityError(f"unable to stage bound product recipe bytes: {error}") from error
     if compiled.root_hash != root_hash or compiled.packets != packets:
         raise IntegrityError("product recipe recompilation does not match authoritative MP4 packet stream")
     return compiled
@@ -443,7 +450,7 @@ def verify_product_bundle(
     _validate_ffmpeg(manifest["ffmpeg"])
 
     root = Path(index_path).parent
-    product_path, _ = _read_bound_artifact(
+    _, product_media_bytes = _read_bound_artifact(
         root, manifest["product"], expected_name=_FIXED_NAMES["product"], label="product MP4"
     )
     recipe_path, recipe_bytes = _read_bound_artifact(
@@ -476,21 +483,28 @@ def verify_product_bundle(
 
     try:
         capabilities = hls.probe_media_capabilities()
-        product_mp4.probe_product_mp4(
-            product_path,
-            capabilities,
-            packet_count=len(packet_index),
-            interval_seconds=profile.interval_seconds,
-        )
+        with tempfile.TemporaryDirectory(prefix="ald-product-bound-media-") as temporary:
+            product_path = Path(temporary) / _FIXED_NAMES["product"]
+            product_path.write_bytes(product_media_bytes)
+            product_mp4.probe_product_mp4(
+                product_path,
+                capabilities,
+                packet_count=len(packet_index),
+                interval_seconds=profile.interval_seconds,
+            )
+            packets = _decode_authoritative_packets(product_path, capabilities, packet_index)
+            if not packets or packets[-1].digest != root_hash:
+                raise IntegrityError("product MP4 ALD1 packet root does not match bundle index")
+            _verify_audio_witness(product_path, capabilities, profile, packets)
     except core.DependencyError:
+        raise
+    except IntegrityError:
         raise
     except core.ALDError as error:
         raise IntegrityError(f"product MP4 profile verification failed: {error}") from error
+    except OSError as error:
+        raise IntegrityError(f"unable to stage bound product MP4 bytes: {error}") from error
 
-    packets = _decode_authoritative_packets(product_path, capabilities, packet_index)
-    if not packets or packets[-1].digest != root_hash:
-        raise IntegrityError("product MP4 ALD1 packet root does not match bundle index")
-    _verify_audio_witness(product_path, capabilities, profile, packets)
     compiled = _verify_recipe(recipe_path, recipe_bytes, packets, root_hash)
     _verify_product_document(
         product_bytes,
