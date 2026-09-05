@@ -49,7 +49,7 @@ Existing recipes continue to use:
 
 and the existing `ALD_CYCLE` opcode.
 
-The legacy parser, normalized packet shape, legacy `SurfaceModel`, controller state transitions, canonical packet bytes, and hash-chain outputs must remain unchanged for these recipes.
+The legacy parser, normalized packet shape, legacy `SurfaceModel`, controller state transitions, canonical packet bytes, legacy surface snapshot schema, and hash-chain outputs must remain unchanged for these recipes.
 
 ### 4.2 New recipes
 
@@ -127,6 +127,8 @@ Every new catalog recipe includes at least these metadata fields:
 - `research-stage`: published or otherwise credibly documented but less mature, specialized, or still under active research.
 - `conceptual-multicomponent-surrogate`: a chemically motivated simulator composition or supercycle representation that must not be presented as a validated physical synthesis route.
 
+Each recipe has exactly one primary `chemistry_family`; catalog coverage counts use that primary family so one recipe cannot satisfy multiple category minimums.
+
 ## 7. New `DEPOSITION_CYCLE` opcode
 
 ### 7.1 Packet shape
@@ -167,6 +169,14 @@ The new opcode deliberately uses a dimensionless `dose` rather than operational 
 - `purge_ms`: positive synthetic simulator timing used for residual-decay and runtime accounting.
 - `repeat`: positive integer bounded by recipe limits.
 
+A `DEPOSITION_CYCLE` has no physical exposure-duration field. Its preflight runtime contribution is defined exactly as:
+
+```text
+repeat * sum(exposure.purge_ms for exposure in exposures)
+```
+
+This keeps synthetic runtime accounting deterministic without implying a real precursor pulse time.
+
 These values are simulator inputs only. Catalog values must not be copied from literature process conditions.
 
 ### 7.3 Validation
@@ -186,6 +196,8 @@ A `DEPOSITION_CYCLE` must satisfy all of the following:
 - Expanded synthetic runtime remains within `max_runtime_ms`.
 - Canonical packet size remains within the existing 800-byte hard ceiling.
 
+All `DEPOSITION_CYCLE` instructions inside one recipe must use the same **exposure signature**, defined as the exact ordered tuple of precursor identifiers. Doses, purge values, and repeat counts may differ between instructions, but exposure count and precursor order may not. This guarantees one stable sequential surface-state topology for the complete run.
+
 ## 8. Sequential surface model
 
 ### 8.1 Model version
@@ -200,7 +212,7 @@ Legacy recipes continue to use `site-binomial/1` unchanged.
 
 ### 8.2 State chain
 
-For a cycle with `N` ordered exposure steps, each reactive site belongs to one of `N` sequential reaction states.
+For a recipe exposure signature with `N` ordered exposure steps, each reactive site belongs to one of `N` sequential reaction states.
 
 Initial state:
 
@@ -257,14 +269,14 @@ p = 1 - exp(-k_step * dose * transport_factor_region)
 
 Requirements:
 
-- `reaction_factors` length exactly equals exposure-step count.
+- `reaction_factors` length exactly equals the stable exposure-signature length.
 - Values are finite and non-negative.
 - `growth_nm_per_completion_fraction` is a synthetic visualization/reporting scalar, not a calibrated growth-per-cycle value.
 - Existing region transport semantics remain aggregate and dimensionless.
 
 ## 9. Generalized residual model
 
-The sequential model tracks one residual inventory per declared precursor key and per region.
+The sequential model tracks one non-negative residual scalar per declared precursor key and per region.
 
 For exposure of precursor `P`:
 
@@ -272,9 +284,15 @@ For exposure of precursor `P`:
 2. Apply the stochastic transition for that exposure position.
 3. Apply purge decay to every precursor residual inventory during the step purge.
 
-Residual interlock checks consider the maximum residual fraction across all declared precursor inventories.
+Before exposing precursor `P`, generalized incompatible residual is defined as:
 
-This replaces the hard-coded A/B residual pair only for `site-sequential/1`; the legacy model remains unchanged.
+```text
+max(mean(residual[Q] across regions) for every declared Q != P)
+```
+
+The value is compared directly with the existing `max_residual_fraction` limit. This is a synthetic fail-closed interlock metric; it is not a calibrated gas concentration.
+
+This generalized rule applies only to `site-sequential/1`. Legacy A/B incompatible-residual behavior remains unchanged.
 
 ## 10. Deterministic RNG and event samples
 
@@ -312,9 +330,48 @@ The generalized path adds stable controller states:
 
 Audit records include exposure-step index and precursor identifier/name. Controller state names do not dynamically encode chemical names.
 
+The existing `VirtualChamber`/`ChamberSnapshot` A/B valve fields remain unchanged for legacy compatibility. The generalized path does not invent physical C–F valve hardware. Active multi-precursor identity is represented in transition/audit details; C–F exposure events therefore remain conceptual simulator events rather than equipment mappings.
+
 Failure remains fail-closed. Invalid precursor references, malformed sequential-state configuration, residual-limit violations, cycle/runtime limit violations, or impossible state conservation raise the existing typed error families.
 
-## 12. Canonical packets and integrity
+## 12. Sequential result and report schema
+
+Legacy `SurfaceSnapshot` and legacy report serialization remain unchanged for `site-binomial/1`.
+
+The generalized model introduces `SequentialSurfaceSnapshot` with the common summary metrics needed by existing reporting plus generalized state data:
+
+```text
+regions
+state_counts_by_region
+residuals_by_precursor_by_region
+blocked
+defects
+coverage
+thickness_nm
+utilization
+defect_fraction
+completed_depositions
+```
+
+The common summary fields `coverage`, `thickness_nm`, `utilization`, and `defect_fraction` retain the existing meanings at the reporting layer, with `thickness_nm` explicitly synthetic for `site-sequential/1`.
+
+`SimulationResult.surface` becomes a union of the legacy and sequential snapshot types. Both expose `as_dict()` and the common summary properties used by `CycleMetric`.
+
+For `site-sequential/1`, `surface-final.json` includes:
+
+- `model_version: "site-sequential/1"`,
+- ordered exposure signature,
+- precursor identifiers,
+- per-region state-count arrays,
+- per-region residual maps keyed by precursor identifier,
+- common summary metrics,
+- completed-deposition count.
+
+Legacy `surface-final.json` bytes and keys remain unchanged for existing `site-binomial/1` recipes.
+
+`cycles.csv` keeps its existing columns because its metrics are model-agnostic summaries. Exposure-level chemistry detail belongs in `audit.jsonl`, not new CSV columns.
+
+## 13. Canonical packets and integrity
 
 `DEPOSITION_CYCLE` becomes a first-class packet opcode.
 
@@ -327,7 +384,7 @@ Required integrity behavior:
 - Existing recipe roots for unchanged legacy recipes must not change.
 - Verification rejects a modified exposure order, precursor key, dose, purge, repeat, or opcode.
 
-## 13. HLS and Product-MP4 integration
+## 14. HLS and Product-MP4 integration
 
 The media layer does not infer chemistry from pixels.
 
@@ -342,7 +399,7 @@ For `DEPOSITION_CYCLE` packets:
 
 Product visualization may show target material, precursor sequence, conceptual reaction stages, region coverage, and completion progress. It must not infer undisclosed physical process parameters.
 
-## 14. Recipe catalog structure
+## 15. Recipe catalog structure
 
 New recipes live under:
 
@@ -371,7 +428,7 @@ and a human-readable guide at:
 recipes/compounds/README.md
 ```
 
-## 15. Catalog breadth requirement
+## 16. Catalog breadth requirement
 
 The first implementation milestone must add **at least 100 unique curated recipes**. There is no upper cap; additional chemically defensible recipes should be included when they satisfy the inclusion rules.
 
@@ -396,7 +453,7 @@ Precursor-count coverage across the catalog:
 
 If credible literature does not support enough genuine 5- or 6-unique-precursor routes, the implementation must use `conceptual-multicomponent-surrogate` status for clearly labeled simulator compositions rather than fabricate false literature claims.
 
-## 16. Catalog inclusion rules
+## 17. Catalog inclusion rules
 
 A recipe is eligible when:
 
@@ -409,7 +466,7 @@ A recipe is eligible when:
 7. The recipe passes validation, compilation, and deterministic simulation.
 8. No undeclared or unused precursor exists.
 
-## 17. Catalog index
+## 18. Catalog index
 
 `catalog.json` contains one entry per recipe with:
 
@@ -417,7 +474,7 @@ A recipe is eligible when:
 - recipe ID,
 - target material,
 - target formula/network,
-- chemistry family,
+- primary chemistry family,
 - chemistry status,
 - precursor count,
 - ordered precursor names,
@@ -425,13 +482,13 @@ A recipe is eligible when:
 
 The index is generated deterministically from recipe files and checked in CI for drift.
 
-## 18. Validation and testing
+## 19. Validation and testing
 
-### 18.1 Legacy regression
+### 19.1 Legacy regression
 
-Tests must prove unchanged legacy behavior by checking existing canonical packet bytes/root hashes and direct/media execution for current fixtures.
+Tests must prove unchanged legacy behavior by checking existing canonical packet bytes/root hashes and legacy surface/report bytes for current fixtures, plus direct/media execution.
 
-### 18.2 Schema tests
+### 19.2 Schema tests
 
 Cover:
 
@@ -443,10 +500,12 @@ Cover:
 - rejection of unused declared precursors,
 - repeated precursor exposure references,
 - exposure-list bounds,
+- rejection of changed exposure signatures within one recipe,
 - malformed dose/purge/repeat values,
+- exact generalized runtime accounting,
 - packet-size enforcement.
 
-### 18.3 Sequential surface tests
+### 19.3 Sequential surface tests
 
 Cover:
 
@@ -455,13 +514,15 @@ Cover:
 - final-step completion counting,
 - repeated chemical identifiers at multiple positions,
 - independent residual inventories,
+- generalized incompatible-residual calculation,
 - purge decay,
 - region transport variation,
 - deterministic event sampling,
 - seed divergence,
-- failure on invalid state configuration.
+- failure on invalid state configuration,
+- sequential snapshot serialization.
 
-### 18.4 Controller tests
+### 19.4 Controller tests
 
 Cover:
 
@@ -469,9 +530,10 @@ Cover:
 - audit records with precursor identity and step index,
 - residual interlocks,
 - runtime/cycle limits,
+- no physical C–F valve mapping,
 - fail-closed behavior.
 
-### 18.5 Media tests
+### 19.5 Media tests
 
 Cover representative 2-, 3-, 4-, 5-, and 6-precursor recipes through:
 
@@ -484,12 +546,12 @@ Cover representative 2-, 3-, 4-, 5-, and 6-precursor recipes through:
 
 The full 100+ recipe catalog is validated, compiled, and simulated in CI without requiring MP4 generation for every recipe.
 
-### 18.6 Catalog quality tests
+### 19.6 Catalog quality tests
 
 CI enforces:
 
 - at least 100 catalog entries,
-- category minimums,
+- category minimums using each recipe's one primary family,
 - precursor-count minimums,
 - unique recipe IDs and paths,
 - index/repository consistency,
@@ -498,7 +560,7 @@ CI enforces:
 - `physical_fabrication_mapping == false`,
 - successful compile and deterministic seed-42 simulation for every catalog recipe.
 
-## 19. Documentation
+## 20. Documentation
 
 Update:
 
@@ -509,7 +571,7 @@ Update:
 
 Examples must clearly state that chemical identities are real but executable conditions are synthetic.
 
-## 20. Safety and scientific-boundary wording
+## 21. Safety and scientific-boundary wording
 
 Every catalog recipe must state that:
 
@@ -521,11 +583,11 @@ Every catalog recipe must state that:
 
 No recipe should contain real operating windows copied from a paper, patent, vendor process note, or fab recipe.
 
-## 21. Acceptance criteria
+## 22. Acceptance criteria
 
 The implementation is complete when all of the following are true:
 
-1. Existing legacy recipes produce unchanged canonical packet roots and pass all existing tests.
+1. Existing legacy recipes produce unchanged canonical packet roots, legacy surface/report bytes, and pass all existing tests.
 2. `DEPOSITION_CYCLE` accepts and executes 2–6 unique named precursors and 2–12 ordered exposure steps.
 3. C–F exposures modify the generalized surface state and are not metadata-only.
 4. A representative six-precursor recipe completes deterministic simulation and media round-trip verification.
@@ -537,3 +599,4 @@ The implementation is complete when all of the following are true:
 10. Existing Product-MP4 Majorana and surrogate-product behavior remains green.
 11. All executable operating values in the new catalog are explicitly synthetic and non-calibrated.
 12. Documentation clearly separates real chemical identity from simulated process execution.
+13. Sequential reports expose generalized state/residual data without changing legacy report bytes.
