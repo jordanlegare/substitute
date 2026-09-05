@@ -19,6 +19,7 @@ signature = ["cryptography>=42,<47"]
 
 [project.scripts]
 ald-media-controller = "ald_media_controller:main"
+ald-master = "ald_master:main"
 
 [tool.setuptools]
 py-modules = [
@@ -51,6 +52,7 @@ py-modules = [
   "ald_product_bundle",
   "ald_product_verify",
   "ald_product_cli",
+  "ald_master",
 ]
 
 [tool.pytest.ini_options]
