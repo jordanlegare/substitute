@@ -36,6 +36,7 @@ _ARTIFACT_KEYS = frozenset({"path", "sha256"})
 _PACKET_KEYS = frozenset({"sequence", "digest", "pts_ms", "duration_ms"})
 _FFMPEG_KEYS = frozenset({"version", "video_encoder", "audio_encoder", "data_codec", "data_tag"})
 _VIEW_KEYS = frozenset({"top", "stack", "final"})
+_MAX_AAC_TAIL_PADDING_SAMPLES = 1024
 _FIXED_NAMES = {
     "product": "product.mp4",
     "recipe": "recipe.canonical.json",
@@ -291,13 +292,23 @@ def _verify_audio_witness(
         except (core.ALDError, OSError) as error:
             raise IntegrityError(f"product audio witness extraction failed: {error}") from error
 
-    if len(raw) != expected_samples * 2:
-        actual_samples = len(raw) // 2 if len(raw) % 2 == 0 else -1
+    if len(raw) % 2 != 0:
+        raise IntegrityError("product audio witness PCM byte length must be even")
+    actual_samples = len(raw) // 2
+    if actual_samples < expected_samples:
         raise IntegrityError(
             "product audio witness sample count mismatch: "
-            f"expected={expected_samples} actual={actual_samples}"
+            f"expected_at_least={expected_samples} actual={actual_samples}"
         )
-    samples = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32767.0
+    tail_padding_samples = actual_samples - expected_samples
+    if tail_padding_samples > _MAX_AAC_TAIL_PADDING_SAMPLES:
+        raise IntegrityError(
+            "product audio witness exceeds bounded AAC tail padding: "
+            f"expected={expected_samples} actual={actual_samples} "
+            f"max_padding={_MAX_AAC_TAIL_PADDING_SAMPLES}"
+        )
+    authoritative_raw = raw[: expected_samples * 2]
+    samples = np.frombuffer(authoritative_raw, dtype="<i2").astype(np.float64) / 32767.0
     if samples.shape != (expected_samples,):
         raise IntegrityError("product audio witness PCM shape is invalid")
 
