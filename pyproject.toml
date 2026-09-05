@@ -26,6 +26,7 @@ py-modules = [
   "_ald_legacy_core",
   "ald_sequential_surface",
   "ald_hardened_core",
+  "_ald_legacy_hardened_core",
   "ald_media_codecs",
   "ald_media_staging",
   "ald_compression",
