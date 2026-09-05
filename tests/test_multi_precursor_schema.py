@@ -74,11 +74,20 @@ def multi_recipe():
     }
 
 
+def _leave_one_precursor(raw):
+    raw["precursors"].pop("C")
+    raw["precursors"].pop("B")
+
+
+def _make_precursor_gap(raw):
+    raw["precursors"]["D"] = raw["precursors"].pop("C")
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [
-        (lambda r: r["precursors"].pop("B"), "2 to 6"),
-        (lambda r: r["precursors"].update({"D": {"name": "oxygen", "formula": "O2", "role": "oxidant"}}), "contiguous"),
+        (_leave_one_precursor, "2 to 6"),
+        (_make_precursor_gap, "contiguous"),
         (lambda r: r["precursors"]["A"].pop("formula"), "formula"),
         (lambda r: r["instructions"][4]["arguments"]["exposures"].pop(), "every declared precursor"),
         (lambda r: r["instructions"][4]["arguments"]["exposures"].append({"precursor": "F", "dose": 0.2, "purge_ms": 2000}), "declared precursor"),
