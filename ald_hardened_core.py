@@ -1,11 +1,11 @@
-"""Hardened public facade with multi-precursor trust-shape support.
+"""Hardened public boundary with multi-precursor trust-shape support.
 
-The reviewed hardening implementation is retained byte-for-byte in
-``_ald_legacy_hardened_core``. Importing it installs the original trust,
-fault-containment, publication, and CLI hardening on ``ald_core``. This module
-then widens only the validated recipe-shape predicate for
-``multi-precursor/1`` recipes and clears the generalized active-precursor
-marker on fault.
+``ald_core`` installs the multi-precursor extension onto the preserved
+``_ald_legacy_core`` implementation.  This module deliberately applies the
+reviewed hardening to that implementation module object itself, then exposes
+that same object publicly.  Keeping publication/controller functions and
+monkeypatch targets in one module dictionary preserves the legacy trust and
+test boundary while retaining the new schema hooks.
 """
 
 from __future__ import annotations
@@ -15,16 +15,28 @@ import sys
 from types import MappingProxyType
 from typing import Any
 
-# Import for side effects: this installs the existing hardened boundary on
-# the public ald_core module and then aliases its own module name to ald_core.
-import _ald_legacy_hardened_core  # noqa: F401
-import ald_core as _base
+# Import the public extension first.  Its installation step patches the
+# preserved implementation module with multi-precursor validators/classes.
+import ald_core as _facade  # noqa: F401
+import _ald_legacy_core as _base
+
+# The reviewed hardening module imports ``ald_core`` as its patch target.
+# Route that one import to the actual implementation module so its function
+# globals, publication helpers, and monkeypatch surface remain identical.
+_public_core_module = sys.modules.get("ald_core")
+sys.modules["ald_core"] = _base
+try:
+    import _ald_legacy_hardened_core  # noqa: F401
+finally:
+    if _public_core_module is not None:
+        sys.modules["ald_core"] = _public_core_module
+    else:  # pragma: no cover - ald_core was imported above
+        sys.modules.pop("ald_core", None)
 
 
-# The installed hardened methods retain the original module globals even
-# though that module aliases itself to ald_core in sys.modules. Reach those
-# globals through the installed function object instead of copying hardening
-# logic here.
+# The installed hardened methods retain the hardening module globals. Reach
+# those globals through the installed function object instead of duplicating
+# the reviewed hardening logic here.
 _HARDENED_GLOBALS = _base.SimulatedALDController._start_run.__globals__
 _ORIGINAL_SHAPE_CHECK = _HARDENED_GLOBALS["_recipe_shape_is_trusted"]
 _ORIGINAL_HARDENED_HANDLE_FAULT = _base.SimulatedALDController._handle_fault
@@ -142,5 +154,7 @@ def _multi_hardened_handle_fault(self, error) -> None:
 _HARDENED_GLOBALS["_recipe_shape_is_trusted"] = _multi_recipe_shape_is_trusted
 _base.SimulatedALDController._handle_fault = _multi_hardened_handle_fault
 
-# Keep the established public namespace behavior.
+# Preserve the established public namespace behavior: callers of
+# ald_hardened_core and ald_media_controller receive the implementation module
+# whose globals are used by publication/controller functions.
 sys.modules[__name__] = _base
