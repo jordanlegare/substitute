@@ -28,8 +28,30 @@ For a fixed canonical recipe, controller implementation, and random seed, verifi
 | Build a product-stage MP4 bundle | `ald-media-controller compile-product ...` |
 | Verify a product-MP4 bundle | `ald-media-controller verify-product ...` |
 | Verify product MP4 and then simulate | `ald-media-controller simulate-product ...` |
+| Audit precursor/material compatibility evidence | `ald-master compatibility-report` |
+| Rank evidence-supported 2–6 precursor candidates | `ald-master candidates ...` |
 
 The product-MP4 path **adds** a product visualization mode; it does not replace the existing QR/HLS mode.
+
+## Compatibility evidence engine
+
+`ald-master` adds an offline, deterministic evidence graph over the compound catalog. It exhaustively records every unique precursor pair and every directed base-material interface, preserves score/coverage/evidence provenance separately, and ranks bounded 2–6 precursor candidate sets with deterministic beam search.
+
+A high compatibility score means **support inside the configured research evidence model**. It does not mean a combination is chemically safe to mix, compatible with real equipment, experimentally qualified, or ready for fabrication. Missing evidence remains `UNKNOWN` rather than becoming automatic negative evidence.
+
+Common commands:
+
+```bash
+ald-master compatibility-report
+ald-master compatible precursor HfCl4 H2O
+ald-master compatible material HfO2 Al2O3
+ald-master candidates --min-size 2 --max-size 6 --top 20
+ald-master compatibility-build --output build/compatibility/snapshot.json
+```
+
+Use `--json` on compatibility query/report/ranking commands for machine-readable output. `compatibility-build` writes a canonical deterministic snapshot with input digests and complete graph records.
+
+See [`docs/compatibility-engine.md`](docs/compatibility-engine.md) for evidence levels, score-vs-coverage interpretation, candidate scoring, deterministic audit workflow, curated evidence overrides, and the scientific/safety boundary.
 
 ## Requirements
 
@@ -68,10 +90,11 @@ For development and the full test suite:
 python -m pip install -e '.[test,signature]'
 ```
 
-The installed executable is:
+The installed executables are:
 
 ```bash
 ald-media-controller
+ald-master
 ```
 
 ## Quick start: direct simulation
@@ -466,7 +489,7 @@ Run all tests:
 python -m pytest -q
 ```
 
-The repository has separate real-FFmpeg acceptance coverage for the original HLS path and the product-MP4 path.
+The repository has separate real-FFmpeg acceptance coverage for the original HLS path and the product-MP4 path. Compatibility acceptance additionally builds the real compound-catalog graph, checks exhaustive pair/interface cardinalities, performs representative precursor/material queries, ranks 2–6 precursor candidates, and byte-compares independently rebuilt canonical snapshots.
 
 The Product MP4 workflow additionally:
 
@@ -483,6 +506,7 @@ Legacy QR/HLS regression coverage remains mandatory.
 ## Technical documents
 
 - [`docs/recipe-authoring.md`](docs/recipe-authoring.md) — recipe schema and authoring guide.
+- [`docs/compatibility-engine.md`](docs/compatibility-engine.md) — compatibility evidence levels, scoring/coverage, candidate ranking, audit workflow, and safety interpretation.
 - [`docs/majorana2-public-spec-reference.md`](docs/majorana2-public-spec-reference.md) — Majorana 2 public-reference scope, caveats, and product-mode usage.
 - `docs/specs/2026-09-03-ald-media-controller-design.md` — original protocol/system design.
 - `docs/specs/2026-09-04-majorana2-product-mp4-design.md` — product-MP4 design.

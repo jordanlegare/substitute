@@ -30,21 +30,27 @@ SAMPLE_ENTRIES = [
 ]
 
 
-def test_interactive_search_filters_recipe_before_selection(monkeypatch):
-    menu_answers = iter([0, 0, 0, 0, 0, 1, 1])
+def test_interactive_recipe_path_is_shortened_to_search_recipe_workflow_execute(monkeypatch):
+    menu_answers = iter([0, 0, 0, 1])
+    menu_titles = []
+    prompts = []
     captured = {}
 
     monkeypatch.setattr(ald_master, "load_catalog", lambda path: SAMPLE_ENTRIES)
-    monkeypatch.setattr(
-        ald_master,
-        "select_menu",
-        lambda title, options, **kwargs: next(menu_answers),
-    )
-    monkeypatch.setattr(
-        ald_master,
-        "_prompt_text",
-        lambda prompt, default=None: "four b" if prompt.startswith("Search") else (default or ""),
-    )
+
+    def fake_menu(title, options, **kwargs):
+        menu_titles.append(title)
+        return next(menu_answers)
+
+    monkeypatch.setattr(ald_master, "select_menu", fake_menu)
+
+    def fake_prompt(prompt, default=None):
+        prompts.append(prompt)
+        if prompt.startswith("Search"):
+            return "four b"
+        raise AssertionError(f"normal recipe path prompted for advanced option: {prompt}")
+
+    monkeypatch.setattr(ald_master, "_prompt_text", fake_prompt)
 
     def fake_run(commands, *, dry_run=False, runner=None):
         captured["commands"] = commands
@@ -60,6 +66,8 @@ def test_interactive_search_filters_recipe_before_selection(monkeypatch):
     assert code == 0
     assert captured["dry_run"] is True
     assert captured["commands"][0][-1] == "recipes/four-b.json"
+    assert len(menu_titles) == 4
+    assert len(prompts) == 1
 
 
 def test_all_mode_rejects_recipe_id_that_can_escape_output_root(monkeypatch):
