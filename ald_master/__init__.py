@@ -23,6 +23,7 @@ _SPEC = importlib.util.spec_from_file_location("_ald_master_core", _CORE_PATH)
 if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - import machinery guard
     raise ImportError(f"unable to load ald-master core from {_CORE_PATH}")
 _core = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = _core
 _SPEC.loader.exec_module(_core)
 
 for _name, _value in vars(_core).items():
