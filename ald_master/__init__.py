@@ -365,7 +365,7 @@ def _dispatch_candidates(args: argparse.Namespace) -> int:
     else:
         print(snapshot.get("safety_notice", compatibility.SAFETY_NOTICE))
         _print_candidates(result)
-    return 0 if result else 1
+    return 0
 
 
 def _dispatch_explain(args: argparse.Namespace) -> int:
