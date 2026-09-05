@@ -7,6 +7,7 @@ from ald_media_controller import ExitCode, main
 
 
 PRODUCT_RECIPE = Path("recipes/majorana2_public_specs_reference_sim.json")
+SURROGATE_PRODUCT_RECIPE = Path("recipes/products/cmos_high_k_gate_sim.json")
 
 
 def test_compile_product_refuses_existing_output(tmp_path):
@@ -16,6 +17,35 @@ def test_compile_product_refuses_existing_output(tmp_path):
     result = main(["compile-product", str(PRODUCT_RECIPE), "--output", str(output)])
 
     assert result == int(ExitCode.OUTPUT)
+
+
+@pytest.mark.requires_ffmpeg
+def test_surrogate_product_recipe_compiles_and_verifies_as_product_mp4(tmp_path, capsys):
+    bundle = tmp_path / "cmos-product"
+
+    assert main(
+        [
+            "compile-product",
+            str(SURROGATE_PRODUCT_RECIPE),
+            "--seed",
+            "42",
+            "--output",
+            str(bundle),
+        ]
+    ) == int(ExitCode.OK)
+    capsys.readouterr()
+
+    document = json.loads((bundle / "product.json").read_text(encoding="utf-8"))
+    assert document["scene_kind"] == "surrogate-product"
+    assert document["product_family"] == "CMOS high-k gate dielectric surrogate"
+    assert document["physical_fabrication_mapping"] is False
+    assert [region["label"] for region in document["regions"]] == [
+        "gate top surface",
+        "gate sidewall",
+        "channel-adjacent interface",
+    ]
+
+    assert main(["verify-product", str(bundle / "bundle.json")]) == int(ExitCode.OK)
 
 
 @pytest.mark.requires_ffmpeg

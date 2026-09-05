@@ -1,191 +1,151 @@
-"""Deterministic raster/BFSK/data-track staging for product-MP4 mode.
-
-The product raster is display-only. It renders public reference geometry and
-surrogate simulation status, never QR symbols, canonical packet bytes, or
-fabrication instructions.
-"""
+"""Raster-track dispatcher for Majorana and generic surrogate product scenes."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-import shutil
-import wave
 
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 import ald_hardened_core as core
 import ald_media_codecs as media
-import ald_product_data as product_data
 import ald_product_scene as product_scene
+import ald_product_render_majorana as _majorana
+from ald_product_render_majorana import *  # noqa: F401,F403
 
 
-_STAGE_BY_OPCODE = {
-    "CONFIGURE": "reference-stack",
-    "SET_TEMPERATURE": "reference-stack",
-    "EVACUATE": "tetron",
-    "STABILIZE": "gates",
-    "ALD_CYCLE": "simulation-status",
-    "MEASURE": "quantum-dots",
-    "SHUTDOWN": "final",
+_majorana_render_product_frame = _majorana.render_product_frame
+_STAGE_LABELS = {
+    "reference-stack": "product context",
+    "tetron": "concept geometry",
+    "gates": "region map",
+    "simulation-status": "deposition simulation",
+    "quantum-dots": "measurement summary",
+    "final": "final surrogate view",
 }
-_SIMULATION_STAGES = frozenset({"simulation-status", "final"})
-
-
-class ProductRenderError(core.ALDError):
-    """Raised when deterministic product-track staging cannot be completed."""
-
-    exit_code = core.ExitCode.MEDIA
-
-
-@dataclass(frozen=True)
-class ProductTrackSources:
-    frame_paths: tuple[Path, ...]
-    audio_path: Path
-    data_path: Path
-    duration_seconds: float
 
 
 def _font(size: int):
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:  # pragma: no cover - compatibility with older Pillow
-        return ImageFont.load_default()
+    return _majorana._font(size)
 
 
-def _draw_header(draw: ImageDraw.ImageDraw, scene: product_scene.ProductScene, item: core.HashedPacket) -> None:
-    title_font = _font(42)
-    body_font = _font(25)
-    draw.text((64, 48), "Majorana 2 public-reference product view", fill="black", font=title_font)
+def _draw_surrogate_header(
+    draw: ImageDraw.ImageDraw,
+    scene: product_scene.SurrogateProductScene,
+    item: core.HashedPacket,
+) -> None:
+    display_stage = _STAGE_LABELS.get(scene.stage, scene.stage)
+    draw.text((64, 48), scene.product_family, fill="black", font=_font(42))
     draw.text(
         (64, 110),
-        f"Stage: {scene.stage}    Packet {item.packet.sequence:03d}    Status opcode: {item.packet.opcode}",
+        f"Stage: {display_stage}    Packet {item.packet.sequence:03d}    Status opcode: {item.packet.opcode}",
         fill="black",
-        font=body_font,
+        font=_font(25),
     )
     draw.text(
         (64, 1020),
-        "PUBLIC-REFERENCE VISUALIZATION • physical_fabrication_mapping=false • simulation only",
+        "SIMULATION-ONLY PRODUCT VIEW • physical_fabrication_mapping=false • pixels are display-only",
         fill="black",
         font=_font(20),
     )
 
 
-def _draw_stack_context(draw: ImageDraw.ImageDraw, scene: product_scene.ProductScene) -> None:
-    x0, y0, width, height = 80, 190, 350, 650
-    draw.rounded_rectangle((x0, y0, x0 + width, y0 + height), radius=18, outline="black", width=3)
-    draw.text((x0 + 20, y0 + 20), "Public material stack", fill="black", font=_font(28))
-    cursor = y0 + 72
-    for layer in scene.layers:
-        material = layer.material if layer.material is not None else "UNSPECIFIED"
-        thickness = (
-            f"{layer.thickness_nm:g} nm" if layer.thickness_nm is not None else "UNSPECIFIED"
+def _draw_surrogate_context(
+    draw: ImageDraw.ImageDraw,
+    scene: product_scene.SurrogateProductScene,
+) -> None:
+    x0, y0, x1, y1 = 70, 185, 590, 850
+    draw.rounded_rectangle((x0, y0, x1, y1), radius=18, outline="black", width=3)
+    draw.text((x0 + 22, y0 + 22), "Product surrogate", fill="black", font=_font(28))
+    draw.multiline_text(
+        (x0 + 22, y0 + 78),
+        (
+            f"Film role:\n{scene.film_role}\n\n"
+            f"Commercial context:\n{scene.commercial_context}\n\n"
+            f"Modeled scope:\n{scene.modeled_scope}\n\n"
+            "Generic A/B chemistry only\n"
+            "No physical fabrication mapping"
+        ),
+        fill="black",
+        font=_font(18),
+        spacing=6,
+    )
+
+
+def _draw_surrogate_regions(
+    draw: ImageDraw.ImageDraw,
+    scene: product_scene.SurrogateProductScene,
+) -> None:
+    x0, y0, x1, y1 = 650, 185, 1435, 850
+    draw.rounded_rectangle((x0, y0, x1, y1), radius=18, outline="black", width=3)
+    draw.text((x0 + 22, y0 + 22), "Conceptual simulation regions", fill="black", font=_font(27))
+    count = len(scene.regions)
+    available = y1 - y0 - 105
+    row_height = max(58, min(100, available // max(count, 1)))
+    cursor = y0 + 78
+    for region in scene.regions:
+        bottom = min(cursor + row_height - 10, y1 - 18)
+        draw.rounded_rectangle((x0 + 25, cursor, x1 - 25, bottom), radius=12, outline="black", width=2)
+        draw.text(
+            (x0 + 45, cursor + 12),
+            f"R{region.index}: {region.label}",
+            fill="black",
+            font=_font(18),
         )
-        label = f"{layer.role}\n{material} • {thickness}"
-        draw.multiline_text((x0 + 20, cursor), label, fill="black", font=_font(18), spacing=3)
-        cursor += 76
-        if cursor > y0 + height - 55:
+        draw.text(
+            (x0 + 45, cursor + 38),
+            f"simulation transport factor {region.transport_factor:g}",
+            fill="black",
+            font=_font(15),
+        )
+        cursor += row_height
+        if cursor >= y1 - 30:
             break
 
 
-def _draw_tetron(draw: ImageDraw.ImageDraw, scene: product_scene.ProductScene) -> None:
-    # Schematic geometry only: proportions communicate the public H-shaped
-    # tetron topology without mapping dimensions to fabrication coordinates.
-    left, right = 560, 1450
-    upper_y, lower_y = 410, 660
-    wire_half_height = 28
-    backbone_x = 1005
-    backbone_half_width = 26
-
-    draw.rounded_rectangle(
-        (left, upper_y - wire_half_height, right, upper_y + wire_half_height),
-        radius=24,
-        outline="black",
-        width=5,
-    )
-    draw.rounded_rectangle(
-        (left, lower_y - wire_half_height, right, lower_y + wire_half_height),
-        radius=24,
-        outline="black",
-        width=5,
-    )
-    draw.rectangle(
-        (
-            backbone_x - backbone_half_width,
-            upper_y - wire_half_height,
-            backbone_x + backbone_half_width,
-            lower_y + wire_half_height,
-        ),
-        outline="black",
-        width=5,
-    )
-    draw.text(
-        (690, 300),
-        f"{scene.tetron.shape} • 2 horizontal nanowires • Pb reference island",
-        fill="black",
-        font=_font(26),
-    )
-
-
-def _draw_gates(draw: ImageDraw.ImageDraw, scene: product_scene.ProductScene) -> None:
-    gate_x = (740, 990, 1240)
-    for index, gate in enumerate(scene.gate_layers):
-        x = gate_x[index] if index < len(gate_x) else 740 + index * 250
-        draw.rounded_rectangle((x, 345, x + 72, 725), radius=18, outline="black", width=3)
-        draw.text((x - 4, 742), f"G{gate.index}", fill="black", font=_font(20))
-    draw.text((720, 790), "3 schematic functional gate bands", fill="black", font=_font(20))
-
-
-def _draw_quantum_dots(draw: ImageDraw.ImageDraw, scene: product_scene.ProductScene) -> None:
-    positions = ((620, 410), (850, 410), (1160, 410), (1390, 410), (1005, 660))
-    for dot, (x, y) in zip(scene.quantum_dots, positions, strict=False):
-        radius = 22
-        draw.ellipse((x - radius, y - radius, x + radius, y + radius), outline="black", width=4)
-        draw.text((x - 18, y + 30), dot.label, fill="black", font=_font(18))
-
-
-def _draw_status_panel(
+def _draw_surrogate_status(
     draw: ImageDraw.ImageDraw,
-    scene: product_scene.ProductScene,
+    scene: product_scene.SurrogateProductScene,
 ) -> None:
-    x0, y0, x1, y1 = 1515, 190, 1850, 840
+    x0, y0, x1, y1 = 1495, 185, 1855, 850
     draw.rounded_rectangle((x0, y0, x1, y1), radius=18, outline="black", width=3)
-    draw.text((x0 + 18, y0 + 20), "Reference status", fill="black", font=_font(25))
+    draw.text((x0 + 18, y0 + 22), "Simulation status", fill="black", font=_font(25))
     draw.multiline_text(
-        (x0 + 18, y0 + 65),
-        "H tetron\n3 gate layers\n5 quantum dots\n\nKnown stack:\nGaSb\nInAs 6 nm\nInAs0.8Sb0.2 2 nm\nPb 10 nm\n\nUnknown barriers:\nUNSPECIFIED",
+        (x0 + 18, y0 + 70),
+        (
+            "Descriptive product metadata\n"
+            "No physical dimensions\n"
+            "No real precursor chemistry\n"
+            "No equipment settings\n\n"
+            f"Regions: {len(scene.regions)}\n"
+            f"Stage: {_STAGE_LABELS.get(scene.stage, scene.stage)}"
+        ),
         fill="black",
-        font=_font(18),
+        font=_font(17),
         spacing=5,
     )
     if scene.overlay is not None:
         overlay = scene.overlay
         draw.multiline_text(
-            (x0 + 18, y0 + 455),
+            (x0 + 18, y0 + 350),
             (
-                "SURROGATE SIMULATION\n"
+                "GENERIC A/B SURROGATE\n"
                 f"seed: {overlay.seed}\n"
                 f"coverage: {overlay.coverage:.6f}\n"
                 f"thickness: {overlay.thickness_nm:.6f} nm\n"
-                f"defect: {overlay.defect_fraction:.6f}\n"
-                "generic A/B surrogate simulation status"
+                f"defect: {overlay.defect_fraction:.6f}"
             ),
             fill="black",
             font=_font(16),
-            spacing=4,
+            spacing=5,
         )
 
 
-def render_product_frame(
-    scene: product_scene.ProductScene,
+def _render_surrogate_frame(
+    scene: product_scene.SurrogateProductScene,
     item: core.HashedPacket,
     profile: media.MediaProfile,
     destination: Path,
 ) -> Path:
-    """Render one deterministic display-only RGB product frame."""
-    if type(scene) is not product_scene.ProductScene:
-        raise ProductRenderError("product frame requires an exact ProductScene")
     if type(profile) is not media.MediaProfile:
         raise ProductRenderError("product frame profile must be an exact MediaProfile")
     media.validate_hashed_packet(item)
@@ -196,12 +156,10 @@ def render_product_frame(
 
     image = Image.new("RGB", (profile.width, profile.height), "white")
     draw = ImageDraw.Draw(image)
-    _draw_header(draw, scene, item)
-    _draw_stack_context(draw, scene)
-    _draw_tetron(draw, scene)
-    _draw_gates(draw, scene)
-    _draw_quantum_dots(draw, scene)
-    _draw_status_panel(draw, scene)
+    _draw_surrogate_header(draw, scene, item)
+    _draw_surrogate_context(draw, scene)
+    _draw_surrogate_regions(draw, scene)
+    _draw_surrogate_status(draw, scene)
 
     destination = Path(destination)
     try:
@@ -212,108 +170,21 @@ def render_product_frame(
     return destination
 
 
-def _write_full_checksum_wav(
-    compiled: core.CompiledRecipe,
+def render_product_frame(
+    scene: product_scene.ProductSceneLike,
+    item: core.HashedPacket,
     profile: media.MediaProfile,
     destination: Path,
 ) -> Path:
-    intervals: list[np.ndarray] = []
-    for item in compiled.packets:
-        media.validate_hashed_packet(item)
-        intervals.append(media.encode_checksum_audio(item.packet.sequence, item.digest, profile))
-    if not intervals:
-        raise ProductRenderError("product audio requires at least one packet")
-    samples = np.concatenate(intervals)
-    pcm = np.rint(np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
-    try:
-        with wave.open(str(destination), "wb") as target:
-            target.setnchannels(1)
-            target.setsampwidth(2)
-            target.setframerate(profile.sample_rate)
-            target.setcomptype("NONE", "not compressed")
-            target.writeframes(pcm.tobytes(order="C"))
-    except (OSError, wave.Error) as error:
-        raise ProductRenderError(f"unable to write product checksum WAV: {error}") from error
-    return destination
+    if type(scene) is product_scene.ProductScene:
+        return _majorana_render_product_frame(scene, item, profile, destination)
+    if type(scene) is product_scene.SurrogateProductScene:
+        return _render_surrogate_frame(scene, item, profile, destination)
+    raise ProductRenderError("product frame requires a supported product scene")
 
 
-def stage_product_tracks(
-    compiled: core.CompiledRecipe,
-    simulation: core.SimulationResult,
-    root: Path,
-    profile: media.MediaProfile,
-) -> ProductTrackSources:
-    """Stage deterministic PNG, BFSK WAV, and guarded binary data sources."""
-    if type(compiled) is not core.CompiledRecipe or type(compiled.packets) is not tuple:
-        raise ProductRenderError("product staging requires an exact CompiledRecipe")
-    if type(simulation) is not core.SimulationResult:
-        raise ProductRenderError("product staging requires an exact SimulationResult")
-    if type(profile) is not media.MediaProfile:
-        raise ProductRenderError("product staging requires an exact MediaProfile")
-    if simulation.fault is not None:
-        raise ProductRenderError("faulted simulation cannot be staged as product media")
-    if simulation.recipe_id != compiled.recipe.recipe_id:
-        raise ProductRenderError("simulation recipe id does not match compiled recipe")
-    if simulation.root_hash != compiled.root_hash:
-        raise ProductRenderError("simulation root hash does not match compiled recipe")
-    if profile.width != 1920 or profile.height != 1080:
-        raise ProductRenderError("product media profile must be 1920x1080")
-    if profile.sample_rate != 48_000 or profile.interval_seconds != 3.0:
-        raise ProductRenderError("product media profile must use 48 kHz and 3.0-second intervals")
-    if not compiled.packets:
-        raise ProductRenderError("product staging requires at least one packet")
-
-    target = Path(root)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    created = False
-    try:
-        try:
-            target.mkdir(mode=0o700, exist_ok=False)
-        except FileExistsError as error:
-            raise core.OutputError(f"product-track staging directory already exists: {target}") from error
-        except OSError as error:
-            raise core.OutputError(f"unable to create product-track staging directory: {error}") from error
-        created = True
-
-        frame_paths: list[Path] = []
-        for expected_sequence, item in enumerate(compiled.packets):
-            media.validate_hashed_packet(item)
-            if item.packet.sequence != expected_sequence:
-                raise ProductRenderError("compiled packet sequence is not contiguous and zero-based")
-            try:
-                stage = _STAGE_BY_OPCODE[item.packet.opcode]
-            except KeyError as error:
-                raise ProductRenderError(f"unsupported product-stage opcode: {item.packet.opcode}") from error
-            scene = product_scene.build_product_scene(
-                compiled.recipe,
-                stage=stage,
-                simulation=simulation if stage in _SIMULATION_STAGES else None,
-            )
-            frame_path = target / f"frame-{expected_sequence:06d}.png"
-            render_product_frame(scene, item, profile, frame_path)
-            frame_paths.append(frame_path)
-
-        audio_path = _write_full_checksum_wav(compiled, profile, target / "product-audio.wav")
-        interval_ms = int(round(profile.interval_seconds * 1000.0))
-        data_path = product_data.write_product_slot_stream(
-            compiled,
-            target / "product-data.bin",
-            interval_ms=interval_ms,
-            include_guard=True,
-        )
-        return ProductTrackSources(
-            frame_paths=tuple(frame_paths),
-            audio_path=audio_path,
-            data_path=data_path,
-            duration_seconds=len(compiled.packets) * profile.interval_seconds,
-        )
-    except BaseException as error:
-        if created:
-            try:
-                shutil.rmtree(target)
-            except OSError as cleanup_error:
-                try:
-                    error.add_note(f"unable to remove failed product-track staging directory: {cleanup_error}")
-                except AttributeError:
-                    pass
-        raise
+# Preserve the original staging/audio/data implementation. Its global scene
+# module resolves the public dispatcher, and this renderer hook lets each
+# packet choose the appropriate raster variant without changing trust data.
+_majorana.render_product_frame = render_product_frame
+stage_product_tracks = _majorana.stage_product_tracks
