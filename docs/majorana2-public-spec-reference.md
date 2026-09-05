@@ -30,7 +30,7 @@ The paper describes an H-shaped superconducting island consisting of two paralle
 | Backbone width | 20 nm |
 | Target MZMs per tetron in the topological regime | 4 |
 
-These dimensions are metadata only. The current Substitute surface model has no geometric mesh and does not construct an H-shaped device.
+These dimensions are metadata only. The aggregate Substitute surface model does not treat them as deposition geometry or derive process settings from them. Product-MP4 mode uses them only to render a deterministic schematic reference view.
 
 ## Public material stack
 
@@ -141,7 +141,7 @@ ald-media-controller simulate \
   --output build/majorana2-reference-direct
 ```
 
-Compile it through the media path:
+The legacy QR/HLS media mode remains supported:
 
 ```bash
 ald-media-controller compile \
@@ -156,7 +156,65 @@ ald-media-controller simulate-media \
   --output build/majorana2-reference-media-run
 ```
 
-The public metadata is preserved in `recipe.canonical.json` and bound into a compiled media bundle through the recipe SHA-256 in `bundle.json`. The ALD1 packet chain itself continues to cover the executable instruction packets.
+### Product-MP4 mode
+
+Product mode produces one human-facing MP4 whose video track shows the product/reference stage rather than a QR code:
+
+```bash
+ald-media-controller compile-product \
+  recipes/majorana2_public_specs_reference_sim.json \
+  --seed 42 \
+  --output build/majorana2-product
+
+ald-media-controller verify-product build/majorana2-product/bundle.json
+
+ald-media-controller simulate-product \
+  build/majorana2-product/bundle.json \
+  --seed 42 \
+  --output build/majorana2-product-run
+```
+
+The bundle contains:
+
+```text
+product.mp4
+product.json
+product-top.svg
+product-stack.svg
+product-final.svg
+recipe.canonical.json
+bundle.json
+```
+
+The MP4 has exactly three transport streams in the supported profile:
+
+1. **H.264 video** — deterministic public-reference product-stage visualization. It shows the material stack, H-shaped tetron, three functional gate layers, five quantum dots (three shared), simulation status, and final composed reference view.
+2. **AAC audio** — the existing redundant Manchester/BFSK sequence-and-ALD1-digest witness.
+3. **`bin_data` / `gpmd` data** — authoritative timed ALDP v1 instruction records. Each real sample carries one bounded canonical packet plus sequence, timing, chained digest, CRC-32, and zero padding.
+
+`gpmd` is used only as an FFmpeg/MOV/MP4 transport fourcc for the binary data stream. The payload is **Substitute's ALDP v1 format**, not GoPro GPMF telemetry.
+
+The product video pixels are never parsed as instructions. There is no QR/OCR fallback in product verification. Executable `HashedPacket` objects are returned only after the binary data track, ALD1 hash chain/root, BFSK witness, canonical recipe, product JSON, deterministic SVG views, artifact digests, timing/profile constraints, and any requested Ed25519 signature all agree.
+
+`product.json` is canonical JSON and explicitly contains:
+
+```json
+"physical_fabrication_mapping": false
+```
+
+The three-second per-packet media interval is transport framing only; it is not a real or simulated fabrication-step duration.
+
+### Mode comparison
+
+| Mode | Human-facing visual | Authoritative instruction source | Independent witness | Container |
+| --- | --- | --- | --- | --- |
+| Direct | reports only | canonical recipe/ALD1 packets | none | none |
+| QR media | QR instruction frames | decoded QR canonical packet | BFSK sequence/digest audio | local HLS/fMP4 |
+| Product MP4 | Majorana 2 public-reference schematic | ALDP v1 timed `bin_data/gpmd` samples | BFSK sequence/digest audio | single MP4 bundle |
+
+Both media modes converge to the same verified canonical packet objects before simulator execution. For the same recipe and simulation seed, direct and product-MP4 execution are required by CI to produce byte-identical `cycles.csv` and `surface-final.json`.
+
+The public metadata is preserved in `recipe.canonical.json` and bound into the bundle through SHA-256. The ALD1 packet chain continues to cover the executable instruction packets independently of the display representation.
 
 ## Verification in this repository
 
@@ -167,7 +225,18 @@ The public metadata is preserved in `recipe.canonical.json` and bound into a com
 - run twice with seed 42 without a fault artifact;
 - produce byte-identical `audit.jsonl`, `cycles.csv`, and `surface-final.json` across the two runs.
 
-This verifies deterministic use by Substitute. It does **not** validate the physical Majorana 2 device claims or reproduce the real device fabrication process.
+Product-specific tests and `.github/workflows/product-mp4.yml` additionally require:
+
+- a real H.264/AAC/`bin_data(gpmd)` product MP4;
+- byte-exact ALDP data-track round-trip;
+- BFSK sequence/digest agreement;
+- deterministic public-reference JSON/SVG binding;
+- `physical_fabrication_mapping=false`;
+- visible H-tetron/gate/QD/stack reference structure;
+- rejection of audio, manifest, artifact, recipe, view, and signature tampering;
+- byte-identical direct/product simulation reports for seed 42.
+
+These checks verify deterministic use by Substitute. They do **not** validate the physical Majorana 2 device claims or reproduce the real device fabrication process.
 
 ## Public sources
 

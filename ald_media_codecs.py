@@ -119,7 +119,7 @@ def _reject_nonfinite_constant(value: str) -> None:
     raise FrameDecodeError(f"non-finite JSON constant is not allowed: {value}")
 
 
-def _decode_canonical_packet(payload: bytes) -> core.Packet:
+def decode_canonical_packet_bytes(payload: bytes) -> core.Packet:
     try:
         text = payload.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
@@ -149,7 +149,7 @@ def _decode_canonical_packet(payload: bytes) -> core.Packet:
     return packet
 
 
-def _validate_hashed_packet(item: core.HashedPacket) -> None:
+def validate_hashed_packet(item: core.HashedPacket) -> None:
     if type(item) is not core.HashedPacket or type(item.packet) is not core.Packet:
         raise FrameDecodeError("media input must be an exact HashedPacket")
     if type(item.canonical_bytes) is not bytes:
@@ -174,7 +174,7 @@ def _validate_hashed_packet(item: core.HashedPacket) -> None:
 
 
 def encode_qr_payload(item: core.HashedPacket) -> bytes:
-    _validate_hashed_packet(item)
+    validate_hashed_packet(item)
     payload = item.canonical_bytes
     return QR_MAGIC + _QR_HEADER.pack(item.packet.sequence, len(payload)) + item.digest + payload
 
@@ -197,7 +197,7 @@ def decode_qr_payload(data: bytes) -> DecodedFrameRecord:
     if payload_length > _MAX_PACKET_BYTES:
         raise FrameDecodeError("canonical packet exceeds 800 bytes")
     canonical_bytes = data[offset:]
-    packet = _decode_canonical_packet(canonical_bytes)
+    packet = decode_canonical_packet_bytes(canonical_bytes)
     if packet.sequence != sequence:
         raise FrameDecodeError("QR envelope sequence does not match canonical packet")
     return DecodedFrameRecord(sequence=sequence, digest=digest, canonical_bytes=canonical_bytes)
@@ -222,7 +222,7 @@ def _wrap_pixel_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int)
 def render_instruction_frame(item: core.HashedPacket, profile: MediaProfile, destination: Path) -> Path:
     if type(profile) is not MediaProfile:
         raise FrameDecodeError("profile must be an exact MediaProfile")
-    _validate_hashed_packet(item)
+    validate_hashed_packet(item)
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     qr = qrcode.QRCode(error_correction=ERROR_CORRECT_Q, box_size=profile.qr_box_size, border=profile.qr_border_modules)
