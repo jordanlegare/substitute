@@ -47,7 +47,7 @@ def test_product_cli_compile_verify_and_simulation_are_equivalent(tmp_path, caps
     ):
         assert (bundle / name).is_file()
     document = json.loads((bundle / "product.json").read_text(encoding="utf-8"))
-    assert document["scene"]["physical_fabrication_mapping"] is False
+    assert document["physical_fabrication_mapping"] is False
 
     assert main(["verify-product", str(bundle / "bundle.json")]) == int(ExitCode.OK)
     verification = json.loads(capsys.readouterr().out)
