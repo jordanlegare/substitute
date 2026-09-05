@@ -80,13 +80,16 @@ def test_real_catalog_cli_acceptance(tmp_path: Path, capsys):
     report = capsys.readouterr().out
     assert "Compatibility evidence report" in report
 
-    output = tmp_path / "snapshot.json"
-    assert ald_master.main(["compatibility-build", "--output", str(output)]) == 0
-    assert output.exists()
-    assert json.loads(output.read_text(encoding="utf-8"))["schema"] == (
+    output_a = tmp_path / "snapshot-a.json"
+    output_b = tmp_path / "snapshot-b.json"
+    for output in (output_a, output_b):
+        assert ald_master.main(["compatibility-build", "--output", str(output)]) == 0
+        assert output.exists()
+        capsys.readouterr()
+    assert output_a.read_bytes() == output_b.read_bytes()
+    assert json.loads(output_a.read_text(encoding="utf-8"))["schema"] == (
         "ald-compatibility-snapshot/1"
     )
-    capsys.readouterr()
 
     assert ald_master.main(["compatible", "precursor", "HfCl4", "H2O"]) == 0
     assert "HfCl4" in capsys.readouterr().out
