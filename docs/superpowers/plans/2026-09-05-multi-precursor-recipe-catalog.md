@@ -17,7 +17,7 @@
 - Every new precursor object contains exact keys `name`, `formula`, and `role`, each a non-empty string.
 - `DEPOSITION_CYCLE` uses 2–12 ordered exposure steps; every declared precursor appears at least once; repeated precursor references are allowed.
 - New recipes use `metadata.recipe_schema == "multi-precursor/1"` and `surface.model_version == "site-sequential/1"`.
-- Real chemical identities and formulas are allowed and required in the catalog; literature process windows, equipment setpoints, chemical handling instructions, and calibrated physical parameters are excluded.
+- Real chemical identities and formulas are required in the catalog; literature process windows, equipment setpoints, chemical handling instructions, and calibrated physical parameters are excluded.
 - Executable `dose`, purge timing, kinetic coefficients, growth scaling, temperature, pressure, and other controller values in catalog recipes are synthetic simulator inputs and must not be copied from literature process conditions.
 - Canonical packet hard ceiling remains 800 bytes.
 - Packet hashing remains `SHA256(b"ALD1" + previous_digest + canonical_packet_bytes)`.
@@ -30,53 +30,61 @@
 ## File Structure
 
 ### New runtime module
-
-- `ald_sequential_surface.py` — owns `site-sequential/1` configuration, site-state chain, generalized residual inventories, deterministic RNG domain separation, event samples, and snapshots. It must not import CLI/media modules.
+- `ald_sequential_surface.py` — owns `site-sequential/1` configuration, site-state chain, generalized residual inventories, deterministic RNG domain separation, event samples, and snapshots.
 
 ### Existing runtime integration points
-
-- `ald_core.py` — owns recipe-schema dispatch, precursor validation, `DEPOSITION_CYCLE` packet validation, controller state transitions, model dispatch, execution, integrity checks, and report publication.
-- `ald_hardened_core.py` — re-export new public sequential types only if callers need them; do not duplicate implementation.
-- `ald_product_scene.py` — binds multi-precursor sequence metadata into surrogate product scenes/product JSON.
-- `ald_product_svg.py` — renders precursor-sequence summaries without exposing process-window values.
-- `ald_product_render.py` — renders generalized named-precursor sequence/status frames; remove the hard-coded "Generic A/B chemistry only" wording on multi-precursor scenes while preserving Majorana compatibility backend behavior.
+- `ald_core.py` — recipe-schema dispatch, precursor validation, `DEPOSITION_CYCLE` packet validation, controller state transitions, model dispatch, execution, integrity checks, and report publication.
+- `ald_hardened_core.py` — re-export new public sequential types only if required by current facade behavior.
+- `ald_product_scene.py` — bind multi-precursor sequence metadata into surrogate product scenes/product JSON.
+- `ald_product_svg.py` — render precursor-sequence summaries without process-window values.
+- `ald_product_render.py` — render generalized named-precursor sequence/status frames while preserving the Majorana compatibility backend.
 - `pyproject.toml` — package `ald_sequential_surface`.
 
 ### New tests
-
-- `tests/test_multi_precursor_schema.py` — schema, packet normalization, canonical hashing, legacy golden root.
-- `tests/test_sequential_surface.py` — generalized stochastic state-chain and residual model.
-- `tests/test_multi_precursor_controller.py` — controller execution, fail-closed behavior, reports, determinism.
-- `tests/test_multi_precursor_media.py` — HLS/Product-MP4 compile/verify/simulate equivalence.
-- `tests/test_compound_catalog.py` — catalog/index/source/precursor/count and full deterministic simulation acceptance.
+- `tests/test_multi_precursor_schema.py`
+- `tests/test_sequential_surface.py`
+- `tests/test_multi_precursor_controller.py`
+- `tests/test_multi_precursor_media.py`
+- `tests/test_compound_catalog.py`
 
 ### Catalog and tooling
-
-- `recipes/compounds/README.md` — human guide and safety/status semantics.
-- `recipes/compounds/catalog.json` — deterministic machine-readable index.
-- `recipes/compounds/{oxides,nitrides,chalcogenides,metals,carbides_and_other_inorganics,ternary_and_multicomponent,nanolaminates_and_supercycles,molecular_layer_deposition,research}/**/*.json` — curated recipes.
-- `tools/build_compound_catalog.py` — deterministic index builder/checker; reads recipes, validates them through `ald_core`, emits canonical `catalog.json`, and has a `--check` mode.
-- `docs/recipe-authoring.md` — documents both legacy and multi-precursor schema/opcodes.
-- `recipes/README.md` — points to the compound catalog.
-- `.github/workflows/core-hardening.yml`, `.github/workflows/hls-integration.yml`, `.github/workflows/product-mp4.yml` — run new catalog and media acceptance gates.
+- `recipes/compounds/README.md`
+- `recipes/compounds/catalog.json`
+- `recipes/compounds/oxides/*.json`
+- `recipes/compounds/nitrides/*.json`
+- `recipes/compounds/chalcogenides/*.json`
+- `recipes/compounds/metals/*.json`
+- `recipes/compounds/carbides_and_other_inorganics/*.json`
+- `recipes/compounds/ternary_and_multicomponent/*.json`
+- `recipes/compounds/nanolaminates_and_supercycles/*.json`
+- `recipes/compounds/molecular_layer_deposition/*.json`
+- `recipes/compounds/research/*.json`
+- `tools/build_compound_catalog.py`
+- `docs/recipe-authoring.md`
+- `recipes/README.md`
+- `.github/workflows/core-hardening.yml`
+- `.github/workflows/hls-integration.yml`
+- `.github/workflows/product-mp4.yml`
 
 ---
 
-### Task 1: Lock legacy behavior and define multi-precursor test fixtures
+### Task 1: Lock legacy behavior and specify the new recipe contract
 
 **Files:**
 - Create: `tests/test_multi_precursor_schema.py`
-- Read/verify: `recipes/generic_al2o3.json`
-- Modify later tasks only: `ald_core.py`
+- Read: `recipes/generic_al2o3.json`
 
 **Interfaces:**
-- Consumes: existing `load_recipe(path) -> Mapping`, `validate_recipe(raw) -> Recipe`, `compile_recipe(recipe) -> CompiledRecipe`.
-- Produces: a local `multi_recipe()` fixture builder used by schema tests and a hard golden root assertion for the existing generic Al2O3 recipe.
+- Consumes: `load_recipe(path)`, `validate_recipe(raw)`, `compile_recipe(recipe)`.
+- Produces: a reusable raw-recipe builder and hard compatibility assertions.
 
-- [ ] **Step 1: Write the legacy golden-root test before changing runtime code**
+- [ ] **Step 1: Add the legacy golden-root test**
 
 ```python
+from copy import deepcopy
 from pathlib import Path
+import math
+import pytest
 import ald_core as core
 
 
@@ -86,7 +94,7 @@ def test_generic_al2o3_root_is_legacy_golden():
     assert compiled.root_hash.hex() == "ba55931d8057799a9456c6412c9a1dc36d6600b2c877e25a28ec3564574dcad0"
 ```
 
-- [ ] **Step 2: Add a reusable three-precursor raw-recipe fixture**
+- [ ] **Step 2: Add a reusable three-precursor fixture builder**
 
 ```python
 def multi_recipe():
@@ -150,17 +158,44 @@ def multi_recipe():
     }
 ```
 
-- [ ] **Step 3: Add RED tests for new schema requirements**
+- [ ] **Step 3: Add parameterized RED schema tests**
 
-Test exact contiguous precursor keys, 2–6 count, exact `name/formula/role`, every precursor used, 2–12 exposures, repeated precursor allowed, undeclared precursor rejected, unused declared precursor rejected, below-minimum purge rejected, non-finite dose rejected, and packet >800 bytes rejected.
+```python
+@pytest.mark.parametrize(
+    ("mutator", "message"),
+    [
+        (lambda r: r["precursors"].pop("B"), "2 to 6"),
+        (lambda r: r["precursors"].update({"D": {"name": "oxygen", "formula": "O2", "role": "oxidant"}}), "contiguous"),
+        (lambda r: r["precursors"]["A"].pop("formula"), "formula"),
+        (lambda r: r["instructions"][4]["arguments"]["exposures"].pop(), "every declared precursor"),
+        (lambda r: r["instructions"][4]["arguments"]["exposures"].append({"precursor": "F", "dose": 0.2, "purge_ms": 2000}), "declared precursor"),
+        (lambda r: r["instructions"][4]["arguments"]["exposures"][0].update({"purge_ms": 999}), "min_purge_ms"),
+        (lambda r: r["instructions"][4]["arguments"]["exposures"][0].update({"dose": math.inf}), "finite"),
+    ],
+)
+def test_multi_precursor_schema_rejects_invalid_forms(mutator, message):
+    raw = multi_recipe()
+    mutator(raw)
+    with pytest.raises(core.ALDError, match=message):
+        core.validate_recipe(raw)
 
-- [ ] **Step 4: Run the focused tests and confirm only new-feature tests fail**
+
+def test_multi_precursor_schema_allows_repeated_precursor_position():
+    raw = multi_recipe()
+    exposures = raw["instructions"][4]["arguments"]["exposures"]
+    exposures.insert(2, {"precursor": "A", "dose": 0.2, "purge_ms": 2000})
+    raw["surface"]["reaction_factors"] = [1.4, 1.2, 1.1, 1.0]
+    recipe = core.validate_recipe(raw)
+    assert len(recipe.instructions[4]["arguments"]["exposures"]) == 4
+```
+
+- [ ] **Step 4: Run RED tests**
 
 Run: `python -m pytest tests/test_multi_precursor_schema.py -q`
 
-Expected: golden legacy root passes; multi-precursor tests fail because `DEPOSITION_CYCLE` / extended precursor schema are not implemented.
+Expected: golden legacy test passes; new multi-precursor tests fail because the schema/opcode are unsupported.
 
-- [ ] **Step 5: Commit RED tests**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add tests/test_multi_precursor_schema.py
@@ -176,74 +211,121 @@ git commit -m "test: specify multi-precursor recipe schema"
 - Test: `tests/test_multi_precursor_schema.py`
 
 **Interfaces:**
-- Produces: `_validate_precursors(metadata, raw)`, `_validate_deposition_cycle_arguments(arguments, limits, precursors)`, and `Packet` support for opcode `DEPOSITION_CYCLE`.
-- Legacy: exact `ALD_CYCLE` normalized shape and canonical bytes remain unchanged.
+- Produces: `_validate_precursors(metadata, raw)`, `_validate_deposition_cycle_arguments(arguments, limits, precursors)`, and trusted-packet support for `DEPOSITION_CYCLE`.
 
-- [ ] **Step 1: Add schema-dispatch helpers**
-
-Implement constants and helpers conceptually equivalent to:
+- [ ] **Step 1: Add schema-dispatch constants and helpers**
 
 ```python
 _PRECURSOR_IDS = ("A", "B", "C", "D", "E", "F")
 _MULTI_SCHEMA = "multi-precursor/1"
 
 
-def _recipe_schema(metadata):
-    value = metadata.get("recipe_schema")
-    return value if value == _MULTI_SCHEMA else None
+def _is_multi_recipe(metadata: Mapping[str, Any]) -> bool:
+    return metadata.get("recipe_schema") == _MULTI_SCHEMA
 
 
 def _expected_precursor_prefix(count: int) -> tuple[str, ...]:
     return _PRECURSOR_IDS[:count]
 ```
 
-Legacy metadata without `recipe_schema` must take the existing exact `{A:{label},B:{label}}` branch.
+Legacy metadata without the exact schema tag must stay on the existing `{A:{label},B:{label}}` branch.
 
-- [ ] **Step 2: Implement exact new precursor validation**
-
-For multi recipes: require 2–6 keys, require `tuple(keys)` as a contiguous prefix after deterministic sort, require exact precursor object keys `name`, `formula`, `role`, and freeze normalized objects as `MappingProxyType`.
-
-- [ ] **Step 3: Implement `DEPOSITION_CYCLE` recipe-level validation**
-
-Normalized packet shape must be exactly:
+- [ ] **Step 2: Implement exact multi-precursor validation**
 
 ```python
-{
-    "exposures": tuple(
-        MappingProxyType({
-            "precursor": str,
-            "dose": float,
-            "purge_ms": int,
+def _validate_precursors(metadata: Mapping[str, Any], raw: Any):
+    if not _is_multi_recipe(metadata):
+        values = _require_exact_keys(raw, frozenset({"A", "B"}), "precursors")
+        return MappingProxyType({
+            key: MappingProxyType({
+                "label": _require_string(
+                    _require_exact_keys(values[key], frozenset({"label"}), f"precursors.{key}")["label"],
+                    f"precursors.{key}.label",
+                )
+            })
+            for key in ("A", "B")
         })
-        for ...
-    ),
-    "repeat": int,
-}
+
+    values = _require_mapping(raw, "precursors")
+    keys = tuple(sorted(values))
+    if not 2 <= len(keys) <= 6:
+        raise RecipeError("multi-precursor recipes require 2 to 6 precursors")
+    if keys != _expected_precursor_prefix(len(keys)):
+        raise RecipeError("multi-precursor keys must be a contiguous A-F prefix")
+    normalized = {}
+    for key in keys:
+        item = _require_exact_keys(values[key], frozenset({"name", "formula", "role"}), f"precursors.{key}")
+        normalized[key] = MappingProxyType({
+            field: _require_string(item[field], f"precursors.{key}.{field}")
+            for field in ("name", "formula", "role")
+        })
+    return MappingProxyType(normalized)
 ```
 
-Runtime accounting is `repeat * sum(exposure["purge_ms"] for exposure in exposures)` because `dose` is dimensionless and has no operational pulse-time meaning. Count each `DEPOSITION_CYCLE.repeat` toward `max_cycles` exactly as `ALD_CYCLE.repeat` is counted.
+- [ ] **Step 3: Implement recipe-level `DEPOSITION_CYCLE` validation**
 
-- [ ] **Step 4: Implement direct packet validation for `DEPOSITION_CYCLE`**
+```python
+def _validate_deposition_cycle_arguments(arguments, limits, precursors):
+    values = _require_exact_keys(arguments, frozenset({"exposures", "repeat"}), "DEPOSITION_CYCLE arguments")
+    exposures = values["exposures"]
+    if not isinstance(exposures, list) or not 2 <= len(exposures) <= 12:
+        raise RecipeError("DEPOSITION_CYCLE exposures must contain 2 to 12 steps")
+    normalized = []
+    used = set()
+    for index, raw_exposure in enumerate(exposures):
+        item = _require_exact_keys(raw_exposure, frozenset({"precursor", "dose", "purge_ms"}), f"exposures[{index}]")
+        precursor = _require_string(item["precursor"], f"exposures[{index}].precursor")
+        if precursor not in precursors:
+            raise RecipeError("DEPOSITION_CYCLE references undeclared precursor")
+        dose = _require_finite_number(item["dose"], f"exposures[{index}].dose")
+        purge_ms = _require_integer(item["purge_ms"], f"exposures[{index}].purge_ms", minimum=1)
+        if dose < 0:
+            raise RecipeLimitError("DEPOSITION_CYCLE dose must be non-negative")
+        if purge_ms < limits.min_purge_ms:
+            raise RecipeLimitError("DEPOSITION_CYCLE purge below min_purge_ms")
+        used.add(precursor)
+        normalized.append(MappingProxyType({"precursor": precursor, "dose": dose, "purge_ms": purge_ms}))
+    if used != set(precursors):
+        raise RecipeError("DEPOSITION_CYCLE must use every declared precursor")
+    repeat = _require_integer(values["repeat"], "repeat", minimum=1)
+    runtime_ms = repeat * sum(item["purge_ms"] for item in normalized)
+    return MappingProxyType({"exposures": tuple(normalized), "repeat": repeat}), runtime_ms
+```
 
-`_validate_packet_arguments()` cannot consult a recipe, so it validates only exact field/type/range shape: 2–12 exposures, precursor identifier in `A`–`F`, finite non-negative float dose after normalization, positive purge, positive repeat. Recipe binding (declared/used precursors and min purge) remains in recipe validation.
+- [ ] **Step 4: Extend `_validate_instruction`, cycle counting, and direct packet validation**
 
-- [ ] **Step 5: Extend `_is_exact_packet_arguments` for immutable trusted packets**
+Add a `DEPOSITION_CYCLE` branch that calls the helper above. Count `normalized["arguments"]["repeat"]` toward `max_cycles` for both `ALD_CYCLE` and `DEPOSITION_CYCLE`. In `_validate_packet_arguments`, validate exact packet field/type/range shape without recipe-dependent precursor/min-purge checks.
 
-Require exact built-in tuple for `exposures`, exact `MappingProxyType` elements, exact string precursor IDs, exact finite floats for `dose`, exact positive ints for `purge_ms`, and exact positive int `repeat`.
+- [ ] **Step 5: Extend `_is_exact_packet_arguments`**
 
-- [ ] **Step 6: Run schema tests and the existing core suite**
+Require `type(exposures) is tuple`; every item must be exact `MappingProxyType` with keys `precursor,dose,purge_ms`; precursor exact `str` in `_PRECURSOR_IDS`; dose exact finite `float >= 0`; purge exact positive `int`; repeat exact positive `int`.
 
-Run:
+- [ ] **Step 6: Add canonical packet-size and exposure-signature tests**
+
+```python
+def test_multi_precursor_packet_round_trip_is_canonical():
+    recipe = core.validate_recipe(multi_recipe())
+    compiled = core.compile_recipe(recipe)
+    packet = compiled.packets[4]
+    assert packet.packet.opcode == "DEPOSITION_CYCLE"
+    assert len(packet.canonical_bytes) <= 800
+    assert core.canonical_packet_bytes(packet.packet) == packet.canonical_bytes
+
+
+def test_all_deposition_cycles_require_same_exposure_signature():
+    raw = multi_recipe()
+    second = deepcopy(raw["instructions"][4])
+    second["arguments"]["exposures"][0]["precursor"] = "B"
+    second["arguments"]["exposures"][1]["precursor"] = "A"
+    raw["instructions"].insert(5, second)
+    with pytest.raises(core.RecipeError, match="exposure signature"):
+        core.validate_recipe(raw)
+```
+
+- [ ] **Step 7: Run and commit**
 
 ```bash
 python -m pytest tests/test_multi_precursor_schema.py tests/test_ald_media_controller.py tests/test_surface_model.py -q
-```
-
-Expected: all pass; golden legacy root remains `ba55931d...`.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add ald_core.py tests/test_multi_precursor_schema.py
 git commit -m "feat: add multi-precursor deposition packet schema"
 ```
@@ -258,239 +340,297 @@ git commit -m "feat: add multi-precursor deposition packet schema"
 - Modify: `pyproject.toml`
 
 **Interfaces:**
-- Produces:
-  - `SequentialSurfaceConfig`
-  - `SequentialEventSample`
-  - `SequentialSurfaceSnapshot`
-  - `SequentialSurfaceModel`
-  - `sequential_reaction_rng(...)`
-- `SequentialSurfaceModel.expose_step(cycle: int, step_index: int, precursor: str, dose: float) -> ExposureResult`
-- `SequentialSurfaceModel.purge(duration_ms: int) -> None`
-- `SequentialSurfaceModel.snapshot() -> SequentialSurfaceSnapshot`
+- `SequentialSurfaceModel(config, root_hash, user_seed, max_event_samples=0)`
+- `expose_step(cycle, step_index, precursor, dose) -> SequentialExposureResult`
+- `purge(duration_ms) -> None`
+- `snapshot() -> SequentialSurfaceSnapshot`
+- `max_incompatible_residual(next_precursor) -> float`
 
-- [ ] **Step 1: Write RED conservation and progression tests**
-
-Use a 3-step configuration and assert: sites are conserved; step 1 cannot move sites waiting for step 0; a complete A/B/C sequence increments completed deposition; fixed seed gives identical snapshots; different step index changes the RNG domain; repeated precursor identity at two positions does not collide.
-
-- [ ] **Step 2: Define immutable config and snapshot types**
-
-`SequentialSurfaceConfig` contains:
+- [ ] **Step 1: Write RED progression/conservation tests**
 
 ```python
-model_version: str
-regions: int
-sites_per_region: int
-transport_factors: tuple[float, ...]
-blocked_fraction: float
-defect_fraction: float
-reaction_factors: tuple[float, ...]
-growth_nm_per_completion_fraction: float
-purge_half_life_ms: int
-precursor_ids: tuple[str, ...]
-exposure_signature: tuple[str, ...]
+from ald_sequential_surface import SequentialSurfaceConfig, SequentialSurfaceModel
+
+
+def config(signature=("A", "B", "C")):
+    return SequentialSurfaceConfig(
+        model_version="site-sequential/1",
+        regions=2,
+        sites_per_region=1000,
+        transport_factors=(1.0, 0.8),
+        blocked_fraction=0.01,
+        defect_fraction=0.005,
+        reaction_factors=tuple(1.0 for _ in signature),
+        growth_nm_per_completion_fraction=0.1,
+        purge_half_life_ms=800,
+        precursor_ids=tuple(sorted(set(signature))),
+        exposure_signature=signature,
+    )
+
+
+def test_three_step_sequence_is_deterministic_and_conserves_sites():
+    root = bytes.fromhex("11" * 32)
+    first = SequentialSurfaceModel(config(), root, 42)
+    second = SequentialSurfaceModel(config(), root, 42)
+    for model in (first, second):
+        model.expose_step(1, 0, "A", 0.5)
+        model.purge(2000)
+        model.expose_step(1, 1, "B", 0.4)
+        model.purge(2000)
+        model.expose_step(1, 2, "C", 0.3)
+        model.purge(2000)
+    assert first.snapshot() == second.snapshot()
+    assert first.snapshot().completed_depositions > 0
+    assert all(sum(region.state_counts) + region.blocked + region.defects == 1000 for region in first.snapshot().regions)
 ```
 
-Snapshot includes per-region state-count tuples, `residuals: Mapping[str, float]`, `coverage`, `thickness_nm`, `utilization`, `defect_fraction`, and `completed_depositions`.
+- [ ] **Step 2: Define concrete immutable types**
 
-- [ ] **Step 3: Implement deterministic RNG domain separation**
+Create `SequentialSurfaceConfig`, `SequentialRegionSnapshot`, `SequentialEventSample`, `SequentialExposureResult`, and `SequentialSurfaceSnapshot` dataclasses. `SequentialSurfaceSnapshot.as_dict()` must emit exact JSON-ready keys used by Task 4.
 
-Bind exact components with length prefixes: root hash, model version, seed, cycle, step index, precursor ID, region, and domain. Hash with SHA-256 and seed `np.random.PCG64` from the first 16 digest bytes, matching the legacy model's deterministic style.
+- [ ] **Step 3: Implement deterministic RNG**
 
-- [ ] **Step 4: Implement the sequential transition chain**
+Length-prefix root hash, model version, seed, cycle, step index, precursor, region, and domain into `b"ALD-SEQUENTIAL-RNG/1"`, hash with SHA-256, then seed `np.random.PCG64(int.from_bytes(digest[:16], "big"))`.
 
-Each region stores a tuple/list of state counts of length `N`; state `i` is eligible only at exposure position `i`. The final step returns reacted sites to state 0 and increments `completed_depositions`. Blocked and defect counts are separate and invariant.
+- [ ] **Step 4: Implement sequential state transitions**
 
-- [ ] **Step 5: Implement one residual inventory per declared precursor**
+For N exposure positions, each region stores `state_counts` length N. Exposure `i` can only react sites in state `i`; non-final success moves them to state `i+1`; final-step success returns them to state 0 and increments completed depositions. Blocked/defect counts never enter the state vector.
 
-`expose_step` adds the dose to that precursor's residual in each region; `purge` exponentially decays all precursor residuals using `purge_half_life_ms`. Provide `max_incompatible_residual(next_precursor)` returning the maximum mean residual among precursor IDs other than `next_precursor`.
+- [ ] **Step 5: Implement residual inventories**
 
-- [ ] **Step 6: Run tests**
+Track a residual float per declared precursor per region. `expose_step` increments only the selected precursor residual; `purge` decays all inventories by `exp(-ln(2)*duration_ms/purge_half_life_ms)`. `max_incompatible_residual(next_precursor)` returns the largest region-mean residual among all other precursor IDs, or 0.0 when none exist.
 
-Run: `python -m pytest tests/test_sequential_surface.py -q`
+- [ ] **Step 6: Add repeated-precursor RNG-domain test**
 
-Expected: PASS.
+```python
+def test_repeated_precursor_positions_use_distinct_rng_domains():
+    model = SequentialSurfaceModel(config(("A", "B", "A")), bytes.fromhex("22" * 32), 42)
+    first = model._reaction_rng_material(1, 0, "A", 0, "reaction")
+    third = model._reaction_rng_material(1, 2, "A", 0, "reaction")
+    assert first != third
+```
 
-- [ ] **Step 7: Package and commit**
+If the implementation keeps RNG material helper private under another exact name, expose a deterministic pure helper instead of testing NumPy internals.
 
-Add `"ald_sequential_surface"` to `pyproject.toml` `py-modules`.
+- [ ] **Step 7: Run, package, commit**
 
 ```bash
+python -m pytest tests/test_sequential_surface.py -q
+# add "ald_sequential_surface" to pyproject.toml py-modules
 git add ald_sequential_surface.py tests/test_sequential_surface.py pyproject.toml
 git commit -m "feat: add sequential multi-precursor surface model"
 ```
 
 ---
 
-### Task 4: Integrate generalized execution into the virtual controller and reports
+### Task 4: Integrate generalized execution into controller and reports
 
 **Files:**
 - Modify: `ald_core.py`
-- Modify: `ald_hardened_core.py` only for required re-exports
+- Modify: `ald_hardened_core.py` only if public facade re-export is required
 - Create: `tests/test_multi_precursor_controller.py`
 
 **Interfaces:**
-- Consumes: `SequentialSurfaceModel` from Task 3 and normalized `DEPOSITION_CYCLE` packets from Task 2.
-- Produces: controller execution for `site-sequential/1` and model-polymorphic `SimulationResult.surface` snapshots.
+- Consumes Task 2 packets and Task 3 model.
+- Produces deterministic controller execution and model-specific `surface-final.json`.
 
-- [ ] **Step 1: Write RED end-to-end controller tests**
+- [ ] **Step 1: Write RED controller tests**
 
-Tests must cover: three-precursor success; six-precursor success; repeated precursor in exposure sequence; deterministic seed-42 result; conservation; residual interlock fault; malformed reaction-factor length -> `INVALID_SURFACE_CONFIG`; changing exposure signature across two `DEPOSITION_CYCLE` instructions rejected at recipe validation; legacy generic Al2O3 reports unchanged.
+```python
+def execute(raw, seed=42):
+    recipe = core.validate_recipe(raw)
+    return core.SimulatedALDController().execute(core.compile_recipe(recipe), seed)
 
-- [ ] **Step 2: Add generalized controller states without replacing legacy states**
 
-Add stable enum values `DEPOSITION_EXPOSURE` and `DEPOSITION_PURGE`. Extend transition table so `READY -> DEPOSITION_EXPOSURE -> DEPOSITION_PURGE -> (DEPOSITION_EXPOSURE | READY)`. Keep all existing A/B transition edges unchanged.
+def test_three_precursor_controller_completes():
+    result = execute(multi_recipe())
+    assert result.fault is None
+    assert result.final_state is core.ControllerState.IDLE
+    assert result.surface.completed_depositions > 0
 
-- [ ] **Step 3: Keep chamber compatibility while tracking active generalized precursor internally**
 
-Add internal `VirtualChamber.active_precursor: str | None = None`, but do not add it to legacy `ChamberSnapshot.as_dict()`. Audit event `details` for generalized exposure/purge contains `cycle`, `step_index`, `precursor`, and real `precursor_name` from the recipe.
+def test_seed_42_is_reproducible():
+    first = execute(multi_recipe(), 42)
+    second = execute(multi_recipe(), 42)
+    assert first.surface.as_dict() == second.surface.as_dict()
+    assert first.cycles == second.cycles
 
-- [ ] **Step 4: Dispatch surface initialization by `model_version`**
 
-`site-binomial/1` continues through existing `SurfaceModel`. `site-sequential/1` constructs `SequentialSurfaceConfig` from recipe surface plus the one recipe-wide exposure signature and declared precursor IDs.
+def test_bad_reaction_factor_length_fails_closed():
+    raw = multi_recipe()
+    raw["surface"]["reaction_factors"] = [1.0, 1.0]
+    result = execute(raw)
+    assert result.fault.code == "INVALID_SURFACE_CONFIG"
+```
+
+Add a six-precursor success case by extending the fixture with D/E/F and six reaction factors.
+
+- [ ] **Step 2: Add generalized controller states**
+
+Add `DEPOSITION_EXPOSURE` and `DEPOSITION_PURGE` to `ControllerState`. Extend transitions exactly: `READY -> DEPOSITION_EXPOSURE`; `DEPOSITION_EXPOSURE -> DEPOSITION_PURGE`; `DEPOSITION_PURGE -> DEPOSITION_EXPOSURE | READY | FAULT`. Keep existing A/B edges unchanged.
+
+- [ ] **Step 3: Add internal active-precursor tracking without changing legacy chamber JSON**
+
+Add `VirtualChamber.active_precursor: str | None = None`; do not add it to `ChamberSnapshot.as_dict()`. Generalized audit details contain exact keys `cycle`, `step_index`, `precursor`, `precursor_name`.
+
+- [ ] **Step 4: Dispatch surface initialization by model version**
+
+`site-binomial/1` continues through existing `SurfaceModel`. `site-sequential/1` constructs `SequentialSurfaceConfig` from the recipe-wide exposure signature, precursor IDs, and sequential surface fields.
 
 - [ ] **Step 5: Implement `_execute_deposition_cycles`**
 
-For each repeat and each exposure position: assert safe, set `active_precursor`, transition to exposure, call `expose_step`, clear active precursor, open purge, transition to purge, advance `purge_ms`, call generalized purge, close purge. After final step return to `READY` and append the existing generic `CycleMetric` fields from the generalized snapshot.
+```python
+def _execute_deposition_cycles(self, arguments, sequence):
+    if self.state is not ControllerState.READY:
+        raise ControllerFault("INVALID_TRANSITION")
+    exposures = arguments["exposures"]
+    for _ in range(int(arguments["repeat"])):
+        self._cycle_index += 1
+        cycle = self._cycle_index
+        for step_index, exposure in enumerate(exposures):
+            precursor = exposure["precursor"]
+            self.assert_precursor_safe(precursor)
+            self.chamber.active_precursor = precursor
+            self.transition(ControllerState.DEPOSITION_EXPOSURE, packet_sequence=sequence,
+                            details=self._deposition_details(cycle, step_index, precursor))
+            self._require_sequential_surface().expose_step(cycle, step_index, precursor, float(exposure["dose"]))
+            self.chamber.active_precursor = None
+            self.chamber.inert_purge_open = True
+            self.transition(ControllerState.DEPOSITION_PURGE, packet_sequence=sequence,
+                            details=self._deposition_details(cycle, step_index, precursor))
+            self._advance_time(int(exposure["purge_ms"]))
+            self._require_sequential_surface().purge(int(exposure["purge_ms"]))
+            self.chamber.inert_purge_open = False
+        self.transition(ControllerState.READY, packet_sequence=sequence, details={"cycle": cycle})
+        self._append_cycle_metric(cycle)
+```
 
-- [ ] **Step 6: Generalize residual interlock dispatch**
+- [ ] **Step 6: Dispatch residual interlocks**
 
-Legacy `incompatible_residual("A"|"B")` remains byte/behavior compatible. Sequential model calls `max_incompatible_residual(next_precursor)` and compares it with `max_residual_fraction`.
+Legacy model keeps current A/B residual logic. Sequential model uses `max_incompatible_residual(next_precursor)` and the existing `max_residual_fraction` threshold.
 
-- [ ] **Step 7: Generalize report serialization only when model is sequential**
+- [ ] **Step 7: Emit concrete sequential surface JSON without changing legacy JSON**
 
-`surface-final.json` for `site-sequential/1` includes:
+A 3-step snapshot serializes as:
 
 ```json
 {
   "model_version": "site-sequential/1",
-  "states_by_region": [...],
-  "residuals_by_region": [...],
-  "coverage": 0.0,
-  "thickness_nm": 0.0,
-  "utilization": 0.0,
-  "defect_fraction": 0.0,
-  "completed_depositions": 0,
+  "states_by_region": [[950, 20, 15], [940, 25, 20]],
+  "residuals_by_region": [{"A": 0.01, "B": 0.02, "C": 0.01}, {"A": 0.02, "B": 0.01, "C": 0.01}],
+  "coverage": 0.015,
+  "thickness_nm": 0.004,
+  "utilization": 0.02,
+  "defect_fraction": 0.005,
+  "completed_depositions": 40,
   "exposure_signature": ["A", "B", "C"]
 }
 ```
 
-Do not add keys to legacy `site-binomial/1` output. `cycles.csv` keeps its existing columns so media/direct comparison remains simple.
+The numbers above illustrate shape only; tests compare deterministic runtime output rather than these literal values. `cycles.csv` keeps existing columns.
 
-- [ ] **Step 8: Run focused and legacy tests**
+- [ ] **Step 8: Run and commit**
 
 ```bash
 python -m pytest tests/test_multi_precursor_controller.py tests/test_multi_precursor_schema.py tests/test_sequential_surface.py tests/test_ald_media_controller.py -q
-```
-
-- [ ] **Step 9: Commit**
-
-```bash
 git add ald_core.py ald_hardened_core.py tests/test_multi_precursor_controller.py
 git commit -m "feat: execute multi-precursor deposition cycles"
 ```
 
 ---
 
-### Task 5: Extend trusted HLS/Product-MP4 round trips and surrogate visuals
+### Task 5: Extend HLS/Product-MP4 round trips and surrogate visuals
 
 **Files:**
 - Modify: `ald_product_scene.py`
 - Modify: `ald_product_svg.py`
 - Modify: `ald_product_render.py`
-- Test: `tests/test_multi_precursor_media.py`
-- Test existing: `tests/test_hls_integration.py`, `tests/test_product_cli.py`, `tests/test_product_verification.py`
+- Create: `tests/test_multi_precursor_media.py`
 
 **Interfaces:**
-- Consumes: canonical `DEPOSITION_CYCLE` packet support and generalized simulation from Tasks 2–4.
-- Produces: HLS/Product-MP4 compile -> verify -> simulate equivalence for multi-precursor recipes.
+- Existing canonical packet bytes remain authoritative in media.
+- Product scene adds sequence identity only; it does not expose operational values.
 
-- [ ] **Step 1: Write RED media acceptance around one 3-precursor fixture file**
+- [ ] **Step 1: Write RED media equivalence tests using a maintained 3-precursor recipe**
 
-Check both modes:
-
-```bash
-ald-media-controller compile recipes/compounds/research/acceptance_three_precursor.json --output build/multi-hls
-ald-media-controller verify build/multi-hls/stream.m3u8
-ald-media-controller simulate-media build/multi-hls/stream.m3u8 --seed 42 --output build/multi-hls-sim
-
-ald-media-controller compile-product recipes/compounds/research/acceptance_three_precursor.json --seed 42 --output build/multi-product
-ald-media-controller verify-product build/multi-product/bundle.json
-ald-media-controller simulate-product build/multi-product/bundle.json --seed 42 --output build/multi-product-sim
+```python
+@pytest.mark.requires_ffmpeg
+def test_multi_precursor_product_round_trip_matches_direct(tmp_path):
+    recipe = Path("recipes/compounds/research/acceptance_three_precursor.json")
+    direct = tmp_path / "direct"
+    bundle = tmp_path / "bundle"
+    media_run = tmp_path / "media"
+    assert cli.main(["simulate", str(recipe), "--seed", "42", "--output", str(direct)]) == 0
+    assert product_cli.main(["compile-product", str(recipe), "--seed", "42", "--output", str(bundle)]) == 0
+    assert product_cli.main(["simulate-product", str(bundle / "bundle.json"), "--seed", "42", "--output", str(media_run)]) == 0
+    for name in ("cycles.csv", "surface-final.json", "audit.jsonl"):
+        assert (direct / name).read_bytes() == (media_run / name).read_bytes()
 ```
 
-Compare `cycles.csv`, `surface-final.json`, and `audit.jsonl` against direct simulation.
+Add equivalent HLS compile/verify/simulate-media coverage in the same file.
 
-- [ ] **Step 2: Ensure media codecs need no format fork**
+- [ ] **Step 2: Keep media packet format unchanged**
 
-Do not create a new media record version merely for the new opcode. Existing canonical packet bytes remain authoritative; `Packet` decoding in core supplies opcode validation. Add tests proving modified exposure order/dose/precursor causes integrity mismatch exactly as any other canonical packet change.
+No new ALDP/HLS record version. Add a tamper test that changes one exposure `precursor` or `dose`, recomputes neither digest nor bundle metadata, and assert verification raises `IntegrityError`.
 
-- [ ] **Step 3: Add multi-precursor scene metadata**
+- [ ] **Step 3: Bind multi-precursor product-scene metadata**
 
-For surrogate scenes, bind `recipe_schema`, target material, precursor sequence labels/names, and `physical_fabrication_mapping=false`. Product JSON must hash-bind these values through the existing scene/product digest path.
+Surrogate scene/product JSON adds exact fields `recipe_schema`, `target_material`, and `precursor_sequence`, where `precursor_sequence` is a tuple of objects containing `id`, `name`, and `formula`. Do not include dose, purge, temperature, pressure, flow, or kinetic values.
 
-- [ ] **Step 4: Update surrogate SVG/raster wording**
+- [ ] **Step 4: Update SVG/raster text**
 
-For multi-precursor recipes, show "Named precursor simulation sequence" plus identifiers/names and exposure step order. Do not display temperature, pressure, purge time, dose, kinetic coefficients, or literature process windows in product pixels. Legacy surrogate A/B wording remains for old product recipes.
+For `multi-precursor/1`, render "Named precursor simulation sequence" plus identifier/name/formula in exposure order. For legacy product recipes retain current generic A/B wording. Majorana compatibility modules remain unchanged.
 
-- [ ] **Step 5: Run media tests with FFmpeg**
+- [ ] **Step 5: Run and commit**
 
 ```bash
 python -m pytest tests/test_multi_precursor_media.py tests/test_hls_integration.py tests/test_product_cli.py tests/test_product_verification.py -q
-```
-
-Expected: all pass.
-
-- [ ] **Step 6: Commit**
-
-```bash
 git add ald_product_scene.py ald_product_svg.py ald_product_render.py tests/test_multi_precursor_media.py
 git commit -m "feat: transport multi-precursor recipes through media"
 ```
 
 ---
 
-### Task 6: Document the schema and add one maintained six-precursor acceptance recipe
+### Task 6: Document schema and add maintained 3- and 6-precursor acceptance recipes
 
 **Files:**
 - Modify: `docs/recipe-authoring.md`
 - Modify: `recipes/README.md`
 - Create: `recipes/compounds/README.md`
+- Create: `recipes/compounds/research/acceptance_three_precursor.json`
 - Create: `recipes/compounds/research/acceptance_six_precursor_surrogate.json`
-- Test: `tests/test_multi_precursor_schema.py`
 
-**Interfaces:**
-- Produces: a checked-in six-precursor executable example that exercises the maximum precursor count without claiming a validated physical synthesis route.
+- [ ] **Step 1: Document legacy and multi-precursor authoring contracts**
 
-- [ ] **Step 1: Add authoring documentation**
+Document exact precursor object shape, contiguous A–F rule, `DEPOSITION_CYCLE`, 2–12 exposure rule, repeated precursor semantics, synthetic dimensionless `dose`, sequential surface fields, status taxonomy, and source-reference policy.
 
-Document legacy vs `multi-precursor/1`, exact precursor schema, `DEPOSITION_CYCLE`, 2–12 exposures, synthetic `dose`, sequential model fields, real-chemical identity policy, and status taxonomy.
+- [ ] **Step 2: Add the 3-precursor maintained media fixture**
 
-- [ ] **Step 2: Add a six-unique-precursor conceptual multicomponent acceptance recipe**
+Use three real named chemicals with a literature-grounded target/precursor pairing. Mark operational values synthetic. Keep packet <=800 bytes.
 
-Use six real chemical identities and mark `chemistry_status: "conceptual-multicomponent-surrogate"`. The target must be a clearly named multicomponent film/network surrogate; source references may document the constituent chemistry families but must not claim the exact six-source sequence is a published process.
+- [ ] **Step 3: Add the 6-precursor maintained maximum-width fixture**
 
-- [ ] **Step 3: Add acceptance assertions**
+Use six distinct real chemical identities, all used in the sequence, and mark `chemistry_status: "conceptual-multicomponent-surrogate"` unless the exact six-source route has a direct credible source. The target name must explicitly say `surrogate` when conceptual.
 
-Assert exact precursor keys `A`–`F`, each `name/formula/role`, all six used in the exposure signature, validation/compile success, seed-42 controller success, and packet <=800 bytes.
-
-- [ ] **Step 4: Run docs/example acceptance**
+- [ ] **Step 4: Verify both examples**
 
 ```bash
+ald-media-controller validate recipes/compounds/research/acceptance_three_precursor.json
+ald-media-controller simulate recipes/compounds/research/acceptance_three_precursor.json --seed 42 --output build/three-precursor-acceptance
 ald-media-controller validate recipes/compounds/research/acceptance_six_precursor_surrogate.json
 ald-media-controller simulate recipes/compounds/research/acceptance_six_precursor_surrogate.json --seed 42 --output build/six-precursor-acceptance
-python -m pytest tests/test_multi_precursor_schema.py -q
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/recipe-authoring.md recipes/README.md recipes/compounds/README.md recipes/compounds/research/acceptance_six_precursor_surrogate.json tests/test_multi_precursor_schema.py
+git add docs/recipe-authoring.md recipes/README.md recipes/compounds/README.md recipes/compounds/research/acceptance_three_precursor.json recipes/compounds/research/acceptance_six_precursor_surrogate.json
 git commit -m "docs: add multi-precursor authoring contract"
 ```
 
 ---
 
-### Task 7: Add deterministic catalog indexing and repository-level chemistry QA
+### Task 7: Add deterministic catalog indexing and repository chemistry QA
 
 **Files:**
 - Create: `tools/build_compound_catalog.py`
@@ -499,64 +639,87 @@ git commit -m "docs: add multi-precursor authoring contract"
 
 **Interfaces:**
 - `build_compound_catalog(root: Path) -> dict[str, object]`
-- CLI: `python tools/build_compound_catalog.py [--check]`
-- Index entries contain: path, recipe_id, target_material, target_formula, chemistry_family, chemistry_status, precursor_count, precursor names/formulas/roles, source reference identifiers.
+- CLI: `python tools/build_compound_catalog.py` writes index; `--check` byte-compares generated canonical JSON with checked-in index.
 
-- [ ] **Step 1: Write RED index/coverage tests against an initially incomplete catalog**
+- [ ] **Step 1: Write RED index integrity tests**
 
-Require canonical sorted entries, unique recipe IDs, path existence, no duplicate target+precursor-signature route, exact status enum, `physical_fabrication_mapping is False`, real precursor metadata fields, source references for established/research entries, and category/precursor-count floors from Global Constraints.
+```python
+FORBIDDEN_METADATA_KEYS = {
+    "process_temperature", "pulse_time", "flow_sccm", "process_pressure",
+    "growth_window", "dose_time", "handling_notes"
+}
 
-- [ ] **Step 2: Implement deterministic discovery**
 
-Walk only JSON files under the chemistry-category directories; exclude `catalog.json`; load+validate every recipe through `ald_core`; derive index fields from normalized recipe metadata/precursors; sort by repository-relative path.
+def test_catalog_entries_are_unique_and_non_operational():
+    entries = load_catalog_entries()
+    assert len({entry["recipe_id"] for entry in entries}) == len(entries)
+    for entry in entries:
+        raw = json.loads(Path(entry["path"]).read_text())
+        assert raw["metadata"]["physical_fabrication_mapping"] is False
+        assert not FORBIDDEN_METADATA_KEYS.intersection(raw["metadata"])
+        names = [value["name"] for value in raw["precursors"].values()]
+        assert len(names) == len(set(names))
+```
 
-- [ ] **Step 3: Implement `--check`**
+- [ ] **Step 2: Add explicit coverage-floor test**
 
-Canonicalize the derived index with sorted keys/compact separators/LF and byte-compare with checked-in `recipes/compounds/catalog.json`. Exit nonzero on drift.
+```python
+def test_catalog_meets_coverage_floors():
+    entries = load_catalog_entries()
+    family = Counter(entry["chemistry_family"] for entry in entries)
+    counts = Counter(entry["precursor_count"] for entry in entries)
+    assert len(entries) >= 100
+    assert family["oxide"] >= 30
+    assert family["nitride"] >= 10
+    assert family["chalcogenide"] >= 10
+    assert sum(family[name] for name in ("metal", "carbide", "other-inorganic")) >= 10
+    assert counts[3] >= 15
+    assert counts[4] >= 8
+    assert counts[5] >= 4
+    assert counts[6] >= 4
+```
 
-- [ ] **Step 4: Keep source validation semantic but non-operational**
+Also assert combined ternary/multicomponent/nanolaminate count >=15 and combined MLD/hybrid/research count >=15 using catalog classification fields.
 
-`tests/test_compound_catalog.py` requires `source_references` objects with only bibliographic/public identifiers defined by the spec. It must reject recipe metadata fields named like `process_temperature`, `pulse_time`, `flow_sccm`, `process_pressure`, `growth_window`, `dose_time`, or `handling_notes`.
+- [ ] **Step 3: Implement deterministic index builder**
 
-- [ ] **Step 5: Commit tooling/test harness before bulk data**
+Discover JSON recipe files only in category directories, exclude `catalog.json`, validate each through `ald_core`, derive fields from normalized recipe metadata/precursors, sort entries by repository-relative path, and serialize with `ensure_ascii=False`, `allow_nan=False`, `sort_keys=True`, `separators=(",", ":")`, plus one LF.
+
+- [ ] **Step 4: Implement `--check`**
+
+Generate bytes in memory and compare exactly with `recipes/compounds/catalog.json`; print a concise drift error and exit 1 when different.
+
+- [ ] **Step 5: Commit RED catalog harness**
 
 ```bash
 git add tools/build_compound_catalog.py tests/test_compound_catalog.py recipes/compounds/catalog.json
 git commit -m "test: add compound catalog integrity checks"
 ```
 
-The coverage test is expected to remain RED until Tasks 8–11 populate the catalog.
+Coverage-floor test remains RED until bulk data tasks are complete.
 
 ---
 
 ### Task 8: Curate oxide and nitride recipes
 
 **Files:**
-- Create: `recipes/compounds/oxides/*.json` (target at least 36)
-- Create: `recipes/compounds/nitrides/*.json` (target at least 12)
+- Create: at least 36 `recipes/compounds/oxides/*.json`
+- Create: at least 12 `recipes/compounds/nitrides/*.json`
 - Update: `recipes/compounds/catalog.json`
-- Test: `tests/test_compound_catalog.py`
 
-**Interfaces:**
-- Each recipe is directly executable with `DEPOSITION_CYCLE` and `site-sequential/1`.
+- [ ] **Step 1: Curate oxide targets from credible public sources**
 
-- [ ] **Step 1: Build the oxide source matrix**
+Cover at least these families when precursor pairings are publicly documented: Al2O3, HfO2, ZrO2, TiO2, ZnO, SiO2, Ta2O5, Nb2O5, vanadium oxides, WO3, MoOx, SnO2, In2O3, Ga2O3, Y2O3, La2O3, CeO2, MgO, CaO, SrO, BaO, FeOx, CoOx, NiO, CuOx, MnOx, Cr2O3, Sc2O3, Er2O3, Gd2O3, Dy2O3, Lu2O3, BiOx, RuO2, and IrOx. Multiple routes for one target require materially different precursor chemistry and separate source support.
 
-Curate chemically defensible routes spanning at least these target families where public sources support them: Al, Hf, Zr, Ti, Zn, Si, Ta, Nb, V, W, Mo, Sn, In, Ga, Y, La, Ce, Mg, Ca, Sr, Ba, Fe, Co, Ni, Cu, Mn, Cr, Sc, Er, Gd, Dy, Lu, Bi, Ru, and Ir oxides. Multiple routes for the same target are allowed only when precursor chemistry is materially different and each route has its own source basis.
+- [ ] **Step 2: Curate nitride targets**
 
-- [ ] **Step 2: Build the nitride source matrix**
+Cover at least AlN, TiN, TaN, HfN, ZrN, VN, NbN, WN, MoN, SiNx, BN, and GaN where target/precursor pairings are documented. Mark less mature routes `research-stage`.
 
-Cover at least AlN, TiN, TaN, HfN, ZrN, VN, NbN, WN, MoN, SiNx, BN, and GaN where the target/precursor pairing is publicly documented. Mark less mature routes `research-stage`.
+- [ ] **Step 3: Populate each recipe consistently**
 
-- [ ] **Step 3: For each entry, record real precursor identities only from credible public sources**
+Each file must contain real precursor `name/formula/role`, target metadata, status, source identifiers, contiguous A–F IDs, one stable exposure signature, `site-sequential/1`, and synthetic controller/surface parameters drawn from a small fixed set of internal simulator profiles rather than literature conditions.
 
-Store chemical `name`, `formula`, `role`, chemistry status, and source identifier. Do not copy source temperature, pressure, pulse, flow, or purge values. Assign synthetic simulator values from a small fixed internal profile set (for example low/medium/high dimensionless doses and standard synthetic purge constants), independent of literature conditions.
-
-- [ ] **Step 4: Validate every file and run seed-42 simulation**
-
-Use a loop in `tests/test_compound_catalog.py` so failures identify the exact path. Assert no controller fault and deterministic identical second run.
-
-- [ ] **Step 5: Rebuild index and commit**
+- [ ] **Step 4: Validate/simulate/index and commit**
 
 ```bash
 python tools/build_compound_catalog.py
@@ -570,24 +733,24 @@ git commit -m "feat: add oxide and nitride recipe catalog"
 ### Task 9: Curate chalcogenide, metal, carbide, and other inorganic recipes
 
 **Files:**
-- Create: `recipes/compounds/chalcogenides/*.json` (target at least 16)
-- Create: `recipes/compounds/metals/*.json` (target at least 10)
-- Create: `recipes/compounds/carbides_and_other_inorganics/*.json` (target at least 8)
+- Create: at least 16 `recipes/compounds/chalcogenides/*.json`
+- Create: at least 10 `recipes/compounds/metals/*.json`
+- Create: at least 8 `recipes/compounds/carbides_and_other_inorganics/*.json`
 - Update: `recipes/compounds/catalog.json`
 
 - [ ] **Step 1: Curate chalcogenide targets**
 
-Cover representative sulfide/selenide families such as ZnS, CdS, PbS, SnS/SnS2, In2S3, TiS2, MoS2, WS2, Cu sulfides, ZnSe, CdSe, SnSe, MoSe2, and WSe2 when credible precursor pairings are publicly documented.
+Prioritize ZnS, CdS, PbS, SnS, SnS2, In2S3, TiS2, MoS2, WS2, copper sulfides, ZnSe, CdSe, SnSe, MoSe2, WSe2, and other documented sulfide/selenide ALD routes.
 
-- [ ] **Step 2: Curate elemental metal targets**
+- [ ] **Step 2: Curate metal targets**
 
-Cover representative ALD metal routes such as Pt, Ru, Ir, Pd, Rh, Co, Ni, Cu, W, and Mo where public precursor/reductant chemistry is documented; accurately mark research-stage routes.
+Prioritize Pt, Ru, Ir, Pd, Rh, Co, Ni, Cu, W, and Mo where public precursor/reductant chemistry is documented.
 
-- [ ] **Step 3: Curate carbides/other inorganic films**
+- [ ] **Step 3: Curate carbide/other-inorganic targets**
 
-Include documented carbide, boride, phosphate, fluoride, or related ALD/MLD inorganic film families where chemistry identity is credible. Do not force category count with speculative routes; use research-stage only when a real source exists.
+Add documented carbide, boride, phosphate, fluoride, and related inorganic ALD/MLD systems. Do not fill counts with unsupported chemistry.
 
-- [ ] **Step 4: Validate, simulate seed 42, rebuild index, commit**
+- [ ] **Step 4: Validate/simulate/index and commit**
 
 ```bash
 python tools/build_compound_catalog.py
@@ -601,27 +764,39 @@ git commit -m "feat: add chalcogenide metal and inorganic recipes"
 ### Task 10: Curate ternary, multicomponent, nanolaminate, and 3–6 precursor recipes
 
 **Files:**
-- Create: `recipes/compounds/ternary_and_multicomponent/*.json` (target at least 16)
-- Create: `recipes/compounds/nanolaminates_and_supercycles/*.json` (target at least 16)
+- Create: at least 16 `recipes/compounds/ternary_and_multicomponent/*.json`
+- Create: at least 16 `recipes/compounds/nanolaminates_and_supercycles/*.json`
 - Update: `recipes/compounds/catalog.json`
+- Modify: `tests/test_compound_catalog.py`
 
-- [ ] **Step 1: Curate literature-backed multicomponent/supercycle systems**
+- [ ] **Step 1: Curate grounded multicomponent families**
 
-Prioritize meaningful systems such as Hf-Al-O, Hf-Si-O, Zr-Al-O, Al-Ti-O, Sr-Ti-O, Ba-Ti-O, La-Al-O, Li-Al-O, and published battery/dielectric multicomponent ALD families. Represent supercycles as ordered `DEPOSITION_CYCLE` exposures only when a single stable exposure signature can model the intended simulator cycle.
+Prioritize Hf-Al-O, Hf-Si-O, Zr-Al-O, Al-Ti-O, Sr-Ti-O, Ba-Ti-O, La-Al-O, Li-Al-O, and documented battery/dielectric multicomponent families.
 
-- [ ] **Step 2: Add nanolaminate/supercycle surrogates with accurate status labels**
+- [ ] **Step 2: Use conceptual status for simulator supercycles not directly published as exact routes**
 
-For compositions that are simulator combinations of individually grounded chemistries rather than a directly published exact sequence, use `conceptual-multicomponent-surrogate` and cite only constituent chemistry sources.
+When a recipe combines grounded constituent chemistries but the exact multi-source sequence lacks a direct source, set `chemistry_status` to `conceptual-multicomponent-surrogate`, make the target name explicitly include `surrogate`, and cite constituent chemistry sources only.
 
-- [ ] **Step 3: Satisfy precursor-count floors without filler chemicals**
+- [ ] **Step 3: Satisfy the 3–6 precursor floors without filler chemicals**
 
-Across Tasks 8–10, ensure at least 15 three-precursor and 8 four-precursor recipes. In this task specifically add at least 4 five-precursor and 4 exactly-six-precursor recipes. Each declared chemical must participate in the exposure sequence and have a meaningful compositional/reaction role.
+Across the catalog, reach >=15 three-precursor, >=8 four-precursor, >=4 five-precursor, and >=4 six-precursor recipes. Every declared chemical must have a distinct name and be used at least once in the exposure sequence.
 
-- [ ] **Step 4: Add tests preventing fake six-precursor padding**
+- [ ] **Step 4: Add exact anti-padding test**
 
-For every 5/6 precursor entry, assert all unique precursor names are used, no duplicate chemical name is declared under two IDs, and `chemistry_status` is `conceptual-multicomponent-surrogate` unless the exact multi-source route has a direct credible source.
+```python
+def test_five_and_six_precursor_recipes_are_not_padded():
+    for path, raw in iter_catalog_recipe_json():
+        if len(raw["precursors"]) < 5:
+            continue
+        names = [item["name"] for item in raw["precursors"].values()]
+        assert len(names) == len(set(names)), path
+        used = {item["precursor"] for item in deposition_exposures(raw)}
+        assert used == set(raw["precursors"]), path
+        if raw["metadata"]["chemistry_status"] != "conceptual-multicomponent-surrogate":
+            assert raw["metadata"]["source_references"], path
+```
 
-- [ ] **Step 5: Validate/simulate/index/commit**
+- [ ] **Step 5: Validate/simulate/index and commit**
 
 ```bash
 python tools/build_compound_catalog.py
@@ -635,23 +810,27 @@ git commit -m "feat: add multicomponent and six-precursor recipes"
 ### Task 11: Curate MLD, hybrid, and research-stage molecular-layer systems
 
 **Files:**
-- Create: `recipes/compounds/molecular_layer_deposition/*.json` (target at least 18)
-- Create: `recipes/compounds/research/*.json` (additional target at least 12, excluding acceptance fixtures)
+- Create: at least 18 `recipes/compounds/molecular_layer_deposition/*.json`
+- Create: at least 12 additional `recipes/compounds/research/*.json`
 - Update: `recipes/compounds/catalog.json`
 
-- [ ] **Step 1: Curate established/research MLD hybrid families**
+- [ ] **Step 1: Curate documented MLD/hybrid families**
 
-Cover meaningful metal-organic molecular-layer families such as alucone, zincone, titanicone, zirconicone, hafnicone, and additional documented organic-inorganic networks using real named metal precursors and bifunctional organic co-reactants. Use the literature's film/network name; do not claim isolated molecule synthesis when the source describes a film.
+Cover alucone, zincone, titanicone, zirconicone, hafnicone, and other documented organic-inorganic molecular-layer networks using real named metal precursors and bifunctional organic co-reactants. Use the literature's film/network terminology; do not claim isolated molecule synthesis when the source describes a film.
 
-- [ ] **Step 2: Add research-stage chemistries across underrepresented families**
+- [ ] **Step 2: Extend research-stage coverage**
 
-Use credible publications/public sources to extend oxynitrides, complex oxides, 2D chalcogenides, hybrid networks, battery coatings, and other ALD/MLD research systems while preserving chemistry-status accuracy.
+Add credible research systems in oxynitrides, complex oxides, 2D chalcogenides, hybrid networks, battery coatings, and other underrepresented ALD/MLD families.
 
-- [ ] **Step 3: Re-run catalog floors and target 120+ total recipes**
+- [ ] **Step 3: Reach 120+ total when source quality permits**
 
-If credible chemistry supports more than 120 entries, continue adding non-duplicate routes. Stop adding entries when additional count would require fabricated precursor pairings, duplicate routes, or unsupported chemistry claims.
+Continue adding non-duplicate routes beyond 100 until additional count would require unsupported precursor pairings, duplicate routes, or misleading chemistry claims.
 
-- [ ] **Step 4: Rebuild index and commit**
+- [ ] **Step 4: Validate every recipe twice at seed 42**
+
+`tests/test_compound_catalog.py` loops over every path, validates/compiles, executes twice at seed 42, asserts no controller fault, and compares `surface.as_dict()` and `cycles` between runs.
+
+- [ ] **Step 5: Rebuild index and commit**
 
 ```bash
 python tools/build_compound_catalog.py
@@ -662,21 +841,17 @@ git commit -m "feat: add MLD and research recipe catalog"
 
 ---
 
-### Task 12: Add CI gates and full-system verification
+### Task 12: Add CI gates and final full-system verification
 
 **Files:**
 - Modify: `.github/workflows/core-hardening.yml`
 - Modify: `.github/workflows/hls-integration.yml`
 - Modify: `.github/workflows/product-mp4.yml`
 - Modify: `recipes/compounds/README.md`
-- Test: all new and existing tests
-
-**Interfaces:**
-- Produces: mandatory CI proof that catalog drift, bad chemistry metadata, multi-precursor execution regressions, legacy hash regressions, and media-equivalence regressions fail the build.
 
 - [ ] **Step 1: Add core catalog checks**
 
-Run in `core-hardening.yml`:
+Add exact commands:
 
 ```bash
 python tools/build_compound_catalog.py --check
@@ -686,11 +861,11 @@ python -m py_compile ald_core.py ald_sequential_surface.py ald_hardened_core.py
 
 - [ ] **Step 2: Add one 3-precursor HLS acceptance path**
 
-Compile/verify/direct-simulate/media-simulate a maintained catalog recipe and byte-compare `cycles.csv`, `surface-final.json`, and `audit.jsonl`.
+Compile, verify, direct-simulate, simulate-media, then `cmp` `cycles.csv`, `surface-final.json`, and `audit.jsonl`.
 
 - [ ] **Step 3: Add one 6-precursor Product-MP4 acceptance path**
 
-Compile-product, verify-product, direct simulate, simulate-product, and compare the same reports. Probe exactly the existing 3-stream H264/AAC/bin_data-gpmd profile; no new stream type is introduced.
+Compile-product, verify-product, direct simulate, simulate-product, compare the same three reports, and ffprobe exactly the existing H264/AAC/bin_data-gpmd three-stream profile.
 
 - [ ] **Step 4: Run the complete local verification matrix**
 
@@ -700,15 +875,13 @@ python -m pytest -q
 python -m py_compile ald_core.py ald_sequential_surface.py ald_hardened_core.py ald_media_codecs.py ald_media_cli.py ald_product_scene.py ald_product_svg.py ald_product_render.py ald_product_verify.py
 ```
 
-Then run the two CLI acceptance paths from Steps 2–3 with FFmpeg installed.
+Then run both FFmpeg acceptance paths. Confirm the legacy root is exactly `ba55931d8057799a9456c6412c9a1dc36d6600b2c877e25a28ec3564574dcad0`.
 
-Expected: all tests green; generic Al2O3 root remains `ba55931d8057799a9456c6412c9a1dc36d6600b2c877e25a28ec3564574dcad0`; catalog floors pass; direct/media outputs match exactly.
+- [ ] **Step 5: Update README generated counts**
 
-- [ ] **Step 5: Update the catalog README with generated counts**
+Document exact totals by family, chemistry status, and precursor count from `catalog.json`, the index regeneration command, and the rule that references support chemical identity only, not executable process conditions.
 
-Document total recipe count, counts by chemistry family/status/precursor count, index regeneration command, and the explicit rule that source references support chemical identity only—not executable process conditions.
-
-- [ ] **Step 6: Commit CI and final documentation**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add .github/workflows/core-hardening.yml .github/workflows/hls-integration.yml .github/workflows/product-mp4.yml recipes/compounds/README.md
@@ -721,10 +894,10 @@ git commit -m "ci: verify multi-precursor catalog and media paths"
 
 Before merging implementation:
 
-1. Compare legacy `recipes/generic_al2o3.json` compiled root against the hard golden value.
-2. Verify all new recipe files contain 2–6 contiguous precursor IDs with real names/formulas/roles.
-3. Verify no catalog entry contains copied operational process windows or handling instructions.
-4. Verify established/research-stage source references actually support the target/precursor pairing.
-5. Verify all 5/6 precursor recipes use every unique precursor and are not padded.
-6. Verify full pytest, py_compile, catalog `--check`, HLS acceptance, Product-MP4 acceptance, signed-product regression, and legacy Majorana safety binding all pass on the exact PR head.
-7. Review the PR diff for accidental modifications to legacy Majorana compatibility backends or unrelated code.
+1. Legacy generic Al2O3 root equals `ba55931d8057799a9456c6412c9a1dc36d6600b2c877e25a28ec3564574dcad0`.
+2. Every new recipe contains 2–6 contiguous precursor IDs with real `name`, `formula`, and `role`.
+3. No catalog entry contains copied operational process windows or chemical-handling instructions.
+4. Every `established`/`research-stage` source reference supports the target/precursor pairing.
+5. Every 5/6 precursor recipe uses all unique precursors and is not padded.
+6. Full pytest, py_compile, catalog `--check`, HLS acceptance, Product-MP4 acceptance, signed-product regression, and legacy Majorana safety binding pass on the exact PR head.
+7. PR diff contains no unintended modification to Majorana compatibility backends or unrelated code.
