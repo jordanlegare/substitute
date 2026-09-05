@@ -55,6 +55,12 @@ jobs:
           ald-media-controller simulate-product build/product-acceptance/bundle/bundle.json --seed 42 --output build/product-acceptance/product
           cmp build/product-acceptance/direct/cycles.csv build/product-acceptance/product/cycles.csv
           cmp build/product-acceptance/direct/surface-final.json build/product-acceptance/product/surface-final.json
+      - name: Signed product CLI acceptance
+        run: |
+          openssl genpkey -algorithm Ed25519 -out build/product-acceptance/private.pem
+          openssl pkey -in build/product-acceptance/private.pem -pubout -out build/product-acceptance/public.pem
+          ald-media-controller compile-product recipes/majorana2_public_specs_reference_sim.json --seed 42 --output build/product-acceptance/signed-bundle --signing-key build/product-acceptance/private.pem
+          ald-media-controller verify-product build/product-acceptance/signed-bundle/bundle.json --require-signature --trusted-public-key build/product-acceptance/public.pem
       - name: Assert product stream profile
         run: |
           python - <<'PY'
