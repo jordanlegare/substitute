@@ -1,0 +1,74 @@
+{
+  "protocol": "ALD-MEDIA/1",
+  "recipe_id": "cmos-high-k-gate-surrogate-001",
+  "metadata": {
+    "product_family": "CMOS high-k gate dielectric surrogate",
+    "commercial_context": "logic CPU/GPU/SoC transistor gate-stack ALD surrogate",
+    "film_role": "generic high-k gate dielectric surrogate",
+    "modeled_scope": "generic A/B conformal deposition across three abstract gate regions",
+    "physical_fabrication_mapping": false,
+    "region_semantics": [
+      "gate top surface",
+      "gate sidewall",
+      "channel-adjacent interface"
+    ],
+    "simulation_notice": "All chemistry, timing, temperature, pressure, transport, and growth values are synthetic simulator inputs and are not a semiconductor fabrication process.",
+    "excluded_processes": [
+      "real high-k material selection",
+      "precursor chemistry",
+      "wafer cleaning",
+      "lithography",
+      "etching",
+      "metal-gate formation",
+      "annealing",
+      "equipment-specific process settings"
+    ]
+  },
+  "precursors": {
+    "A": {"label": "A-sim"},
+    "B": {"label": "B-sim"}
+  },
+  "initial_conditions": {
+    "temperature_c": 25.0,
+    "pressure_pa": 101325.0
+  },
+  "limits": {
+    "min_purge_ms": 1000,
+    "max_temperature_c": 120.0,
+    "max_pressure_pa": 150000.0,
+    "max_cycles": 128,
+    "max_runtime_ms": 1500000,
+    "max_residual_fraction": 0.01,
+    "max_packet_bytes": 800
+  },
+  "surface": {
+    "model_version": "site-binomial/1",
+    "regions": 3,
+    "sites_per_region": 100000,
+    "transport_factors": [1.0, 0.98, 0.96],
+    "blocked_fraction": 0.005,
+    "defect_fraction": 0.002,
+    "k_a": 1.2,
+    "k_b": 1.15,
+    "growth_nm_per_reaction_fraction": 0.08,
+    "purge_half_life_ms": 700,
+    "max_event_samples": 64
+  },
+  "instructions": [
+    {"opcode": "CONFIGURE", "arguments": {}},
+    {"opcode": "SET_TEMPERATURE", "arguments": {"target_c": 60.0, "ramp_c_per_min": 20.0, "tolerance_c": 1.0}},
+    {"opcode": "EVACUATE", "arguments": {"target_pa": 1000.0, "timeout_ms": 120000}},
+    {"opcode": "STABILIZE", "arguments": {"duration_ms": 10000}},
+    {"opcode": "ALD_CYCLE", "arguments": {
+      "precursor_a": "A",
+      "pulse_a_ms": 100,
+      "purge_a_ms": 5000,
+      "precursor_b": "B",
+      "pulse_b_ms": 100,
+      "purge_b_ms": 5000,
+      "repeat": 48
+    }},
+    {"opcode": "MEASURE", "arguments": {"measurements": ["thickness_nm", "coverage", "defect_fraction"]}},
+    {"opcode": "SHUTDOWN", "arguments": {"heater_ramp_c_per_min": 20.0, "vent_target_pa": 101325.0}}
+  ]
+}
