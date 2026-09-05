@@ -33,6 +33,13 @@ finally:
     else:  # pragma: no cover - ald_core was imported above
         sys.modules.pop("ald_core", None)
 
+# ``ald_core`` copied the extension validator into its facade namespace before
+# hardening replaced the implementation validator.  Once hardening is loaded,
+# keep that public entry point synchronized so callers cannot create a recipe
+# object that the shared hardened controller quite correctly rejects as not
+# fully normalized.
+_facade.validate_recipe = _base.validate_recipe
+
 
 # The installed hardened methods retain the hardening module globals. Reach
 # those globals through the installed function object instead of duplicating
