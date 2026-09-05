@@ -1,8 +1,9 @@
 """Master launcher for Substitute's 2-6 precursor simulation catalog.
 
-This module is orchestration-only. It discovers catalog recipes and dispatches
-to the existing ``ald-media-controller`` CLI; it does not reinterpret recipe
-chemistry, generate physical process windows, or control hardware.
+The launcher is orchestration-only. It discovers recipes in the compound
+catalog and delegates execution to the existing ``ald-media-controller`` CLI.
+It does not reinterpret chemistry, create physical process windows, or control
+hardware.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ Substitute master precursor launcher
 Purpose
 -------
 Browse and launch catalog recipes containing 2 through 6 declared precursors.
-The master launcher delegates execution to the existing ald-media-controller.
+The launcher delegates execution to the existing ald-media-controller.
 All repository recipes and resulting workflows remain simulation-only.
 
 Invocation
@@ -41,18 +42,19 @@ Invocation
   ald-master reference               complete switch and command reference
   ald-master list [FILTERS]          list matching catalog recipes
   ald-master run [OPTIONS]           run one recipe or all matching recipes
+  ald-master -h, --help              standard argparse help
 
-Global switches
----------------
+Global switches (place before the subcommand)
+---------------------------------------------
   --catalog PATH                     catalog JSON (default: recipes/compounds/catalog.json)
-  --controller EXECUTABLE            underlying controller command (default: ald-media-controller)
+  --controller EXECUTABLE            controller command (default: ald-media-controller)
 
 Catalog filters
 ---------------
   --precursors {2,3,4,5,6}           precursor count; repeat to select several counts
   --category NAME                    exact catalog category
   --status NAME                      exact chemistry_status
-  --search TEXT                      search recipe id, target, formula, category, status, precursor data
+  --search TEXT                      recipe/target/formula/category/status/precursor text
 
 list switches
 -------------
@@ -61,13 +63,14 @@ list switches
   --status NAME                      chemistry-status filter
   --search TEXT                      case-insensitive text filter
   --recipe-id ID                     exact recipe id; repeatable
+  -h, --help                         list-command help
 
 run selection switches
 ----------------------
   --recipe PATH                      run a direct recipe path
   --recipe-id ID                     run one recipe selected from the catalog
-  --all                              run every recipe matching the supplied filters
-  --precursors {2,3,4,5,6}           repeatable filter; also validates a direct recipe count
+  --all                              run every recipe matching supplied filters
+  --precursors {2,3,4,5,6}           repeatable filter; validates a direct recipe count
   --category NAME                    category filter
   --status NAME                      chemistry-status filter
   --search TEXT                      case-insensitive catalog filter
@@ -77,17 +80,22 @@ run execution switches
   --action {validate,simulate,hls,product}
                                      master workflow to execute
   --seed INTEGER                     deterministic simulation/render seed (default: 42)
-  --output PATH                      output path/root; required except for validate
-  --overwrite                        pass overwrite through to producing/simulation commands
+  --output PATH                      output path/root; required except validate
+  --overwrite                        pass overwrite to producing/simulation commands
   --signing-key PATH                 Ed25519 private key for compile/compile-product
-  --require-signature                require a valid signature during verify/simulation
+  --require-signature                require signature during verify/simulation
   --trusted-public-key PATH          trusted Ed25519 public key for verify/simulation
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
-                                     underlying controller log level (default: INFO)
+                                     controller log level (default: INFO)
   --dry-run                          print exact commands without executing them
+  -h, --help                         run-command help
 
 Underlying ald-media-controller mapping
 ---------------------------------------
+The controller itself also supports -h/--help globally and per subcommand,
+and --log-level may be supplied globally or on each controller subcommand.
+The master launcher emits --log-level globally.
+
 validate:
   ald-media-controller [--log-level LEVEL] validate RECIPE
 
@@ -106,7 +114,7 @@ hls (three commands):
 
 product (three commands):
   ald-media-controller [--log-level LEVEL] compile-product RECIPE
-      --seed INTEGER --output ROOT/bundle [--overwrite] [--signing-key PATH]
+      [--seed INTEGER] --output ROOT/bundle [--overwrite] [--signing-key PATH]
   ald-media-controller [--log-level LEVEL] verify-product ROOT/bundle/bundle.json
       [--require-signature] [--trusted-public-key PATH]
   ald-media-controller [--log-level LEVEL] simulate-product ROOT/bundle/bundle.json
@@ -115,13 +123,18 @@ product (three commands):
 
 Interactive controls
 --------------------
-  Up / Down arrows                  move the highlighted option
-  Enter                             select the highlighted option
-  Number + Enter                    select by displayed number (multi-digit supported)
-  Backspace                         edit a typed number
-  q or Esc                          cancel/back out of the current menu
+  Up / Down arrows                   move the highlighted option
+  Enter                              select the highlighted option
+  Number + Enter                     select by displayed number; multi-digit supported
+  Backspace                          edit a typed number
+  q or Esc                           cancel/back out of the current menu
 
-Non-interactive terminals fall back automatically to numbered text prompts.
+Interactive catalog flow
+------------------------
+  precursor count -> category -> chemistry status -> text search -> recipe
+  -> workflow -> relevant switches -> command preview -> run/dry-run/cancel
+
+Non-interactive terminals automatically fall back to numbered text prompts.
 """
 
 
@@ -144,9 +157,12 @@ def load_catalog(path: Path | str = DEFAULT_CATALOG) -> list[dict[str, Any]]:
         count = entry.get("precursor_count")
         if count not in PRECURSOR_COUNTS:
             raise ValueError(
-                f"catalog entry {entry.get('recipe_id', index)!r} has unsupported precursor_count {count!r}"
+                f"catalog entry {entry.get('recipe_id', index)!r} has unsupported "
+                f"precursor_count {count!r}"
             )
-        if not isinstance(entry.get("recipe_id"), str) or not isinstance(entry.get("path"), str):
+        if not isinstance(entry.get("recipe_id"), str) or not isinstance(
+            entry.get("path"), str
+        ):
             raise ValueError(f"catalog entry {index} is missing recipe_id/path")
         entries.append(entry)
     return entries
@@ -279,7 +295,9 @@ def build_workflow(
         if signing_key is not None:
             compile_command.extend(["--signing-key", os.fspath(signing_key)])
 
-        verify_command = _base_command(controller, log_level, "verify") + [os.fspath(manifest)]
+        verify_command = _base_command(controller, log_level, "verify") + [
+            os.fspath(manifest)
+        ]
         _append_signature_verification(
             verify_command, require_signature, trusted_public_key
         )
@@ -312,7 +330,9 @@ def build_workflow(
     verify_command = _base_command(controller, log_level, "verify-product") + [
         os.fspath(bundle_index)
     ]
-    _append_signature_verification(verify_command, require_signature, trusted_public_key)
+    _append_signature_verification(
+        verify_command, require_signature, trusted_public_key
+    )
 
     simulate_command = _base_command(controller, log_level, "simulate-product") + [
         os.fspath(bundle_index),
@@ -322,7 +342,9 @@ def build_workflow(
         os.fspath(simulation),
     ]
     _append_overwrite(simulate_command, overwrite)
-    _append_signature_verification(simulate_command, require_signature, trusted_public_key)
+    _append_signature_verification(
+        simulate_command, require_signature, trusted_public_key
+    )
     return [compile_command, verify_command, simulate_command]
 
 
@@ -351,14 +373,14 @@ class MenuState:
         if len(key) == 1 and key.isdigit():
             value = self.number_buffer + key
             index = self.index
-            if value and 1 <= int(value) <= option_count:
+            if 1 <= int(value) <= option_count:
                 index = int(value) - 1
             return MenuState(index=index, number_buffer=value)
         if key == "ENTER":
             if self.number_buffer:
-                value = int(self.number_buffer)
-                if 1 <= value <= option_count:
-                    return replace(self, selection=value - 1)
+                number = int(self.number_buffer)
+                if 1 <= number <= option_count:
+                    return replace(self, selection=number - 1)
                 return MenuState(index=self.index)
             return replace(self, selection=self.index)
         return self
@@ -369,8 +391,7 @@ def _read_key_windows() -> str:
 
     char = msvcrt.getwch()
     if char in {"\x00", "\xe0"}:
-        code = msvcrt.getwch()
-        return {"H": "UP", "P": "DOWN"}.get(code, "OTHER")
+        return {"H": "UP", "P": "DOWN"}.get(msvcrt.getwch(), "OTHER")
     if char in {"\r", "\n"}:
         return "ENTER"
     if char == "\x1b":
@@ -400,32 +421,25 @@ def _read_key_posix() -> str:
         ready, _, _ = select.select([sys.stdin], [], [], 0.03)
         if not ready:
             return "ESC"
-        second = sys.stdin.read(1)
-        if second != "[":
+        if sys.stdin.read(1) != "[":
             return "ESC"
         ready, _, _ = select.select([sys.stdin], [], [], 0.03)
         if not ready:
             return "ESC"
-        third = sys.stdin.read(1)
-        return {"A": "UP", "B": "DOWN"}.get(third, "OTHER")
+        return {"A": "UP", "B": "DOWN"}.get(sys.stdin.read(1), "OTHER")
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, previous)
 
 
 def read_key() -> str:
-    if os.name == "nt":
-        return _read_key_windows()
-    return _read_key_posix()
+    return _read_key_windows() if os.name == "nt" else _read_key_posix()
 
 
 def _render_menu(title: str, options: Sequence[str], state: MenuState) -> None:
     sys.stdout.write("\x1b[2J\x1b[H")
     print(title)
     print("Up/Down = move | Enter = select | number + Enter = select | q/Esc = cancel")
-    if state.number_buffer:
-        print(f"Number: {state.number_buffer}")
-    else:
-        print()
+    print(f"Number: {state.number_buffer}" if state.number_buffer else "")
     for number, option in enumerate(options, start=1):
         marker = ">" if number - 1 == state.index else " "
         print(f"{marker} {number:>3}. {option}")
@@ -496,7 +510,9 @@ def render_cli_reference() -> str:
     return CLI_REFERENCE
 
 
-def _add_catalog_filters(parser: argparse.ArgumentParser, *, recipe_ids: bool = False) -> None:
+def _add_catalog_filters(
+    parser: argparse.ArgumentParser, *, recipe_ids: bool = False
+) -> None:
     parser.add_argument(
         "--precursors",
         type=int,
@@ -505,33 +521,45 @@ def _add_catalog_filters(parser: argparse.ArgumentParser, *, recipe_ids: bool = 
         help="precursor count; repeat for multiple counts",
     )
     parser.add_argument("--category", help="exact catalog category")
-    parser.add_argument("--status", dest="chemistry_status", help="exact chemistry_status")
+    parser.add_argument(
+        "--status", dest="chemistry_status", help="exact chemistry_status"
+    )
     parser.add_argument("--search", help="case-insensitive catalog text search")
     if recipe_ids:
-        parser.add_argument("--recipe-id", action="append", help="exact catalog recipe id")
+        parser.add_argument(
+            "--recipe-id", action="append", help="exact catalog recipe id"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ald-master",
         description="Interactive and flag-driven launcher for Substitute 2-6 precursor recipes.",
-        epilog="Use 'ald-master reference' for the complete underlying CLI switch map.",
+        epilog="Use 'ald-master reference' for the complete controller switch map.",
     )
     parser.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     parser.add_argument("--controller", default=DEFAULT_CONTROLLER)
     commands = parser.add_subparsers(dest="command")
 
-    commands.add_parser("reference", help="show complete master and controller switch reference")
+    commands.add_parser(
+        "reference", help="show complete master and controller switch reference"
+    )
 
-    list_parser = commands.add_parser("list", help="list matching 2-6 precursor catalog recipes")
+    list_parser = commands.add_parser(
+        "list", help="list matching 2-6 precursor catalog recipes"
+    )
     _add_catalog_filters(list_parser, recipe_ids=True)
 
-    run_parser = commands.add_parser("run", help="execute one recipe or all matching catalog recipes")
+    run_parser = commands.add_parser(
+        "run", help="execute one recipe or all matching catalog recipes"
+    )
     run_parser.add_argument("--action", choices=ACTIONS, required=True)
     selector = run_parser.add_mutually_exclusive_group(required=True)
     selector.add_argument("--recipe", type=Path, help="direct recipe path")
     selector.add_argument("--recipe-id", help="exact catalog recipe id")
-    selector.add_argument("--all", dest="run_all", action="store_true", help="run all matching recipes")
+    selector.add_argument(
+        "--all", dest="run_all", action="store_true", help="run all matching recipes"
+    )
     _add_catalog_filters(run_parser)
     run_parser.add_argument("--seed", type=int, default=42)
     run_parser.add_argument("--output", type=Path)
@@ -547,7 +575,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _entry_label(entry: dict[str, Any]) -> str:
     count = entry.get("precursor_count", "?")
     recipe_id = entry.get("recipe_id", "<unknown>")
-    target = entry.get("target_material") or entry.get("target_formula") or "unspecified target"
+    target = (
+        entry.get("target_material")
+        or entry.get("target_formula")
+        or "unspecified target"
+    )
     category = entry.get("category", "uncategorized")
     return f"[{count}p] {recipe_id} - {target} ({category})"
 
@@ -577,24 +609,50 @@ def _read_direct_recipe_count(path: Path) -> tuple[int, str]:
         raise ValueError(f"unable to read recipe {path}: {error}") from error
     except json.JSONDecodeError as error:
         raise ValueError(f"recipe is not valid JSON: {error}") from error
+
     precursors = payload.get("precursors") if isinstance(payload, dict) else None
     if not isinstance(precursors, dict):
         raise ValueError("recipe must contain a precursors object")
     count = len(precursors)
     if count not in PRECURSOR_COUNTS:
-        raise ValueError(f"master launcher supports recipes with 2 through 6 precursors; got {count}")
-    recipe_id = payload.get("recipe_id") if isinstance(payload.get("recipe_id"), str) else path.stem
+        raise ValueError(
+            f"master launcher supports recipes with 2 through 6 precursors; got {count}"
+        )
+    recipe_id = (
+        payload.get("recipe_id")
+        if isinstance(payload.get("recipe_id"), str)
+        else path.stem
+    )
     return count, recipe_id
 
 
-def _filter_from_args(entries: Sequence[dict[str, Any]], args: argparse.Namespace) -> list[dict[str, Any]]:
+def _safe_output_component(recipe_id: str) -> str:
+    """Return a recipe id that is safe to append to a batch output root."""
+    if (
+        not recipe_id
+        or recipe_id in {".", ".."}
+        or "/" in recipe_id
+        or "\\" in recipe_id
+        or "\x00" in recipe_id
+    ):
+        raise ValueError(
+            f"recipe_id {recipe_id!r} is not safe for output directory naming"
+        )
+    return recipe_id
+
+
+def _filter_from_args(
+    entries: Sequence[dict[str, Any]], args: argparse.Namespace
+) -> list[dict[str, Any]]:
+    recipe_id_value = getattr(args, "recipe_id", None)
+    recipe_ids = recipe_id_value if isinstance(recipe_id_value, list) else None
     return filter_catalog(
         entries,
         precursor_counts=args.precursors,
         category=args.category,
         chemistry_status=args.chemistry_status,
         search=args.search,
-        recipe_ids=getattr(args, "recipe_id", None) if isinstance(getattr(args, "recipe_id", None), list) else None,
+        recipe_ids=recipe_ids,
     )
 
 
@@ -619,19 +677,25 @@ def _run_flag_mode(args: argparse.Namespace) -> int:
             search=args.search,
         )
         if args.recipe_id is not None:
-            filtered = [entry for entry in filtered if entry["recipe_id"] == args.recipe_id]
+            filtered = [
+                entry for entry in filtered if entry["recipe_id"] == args.recipe_id
+            ]
             if not filtered:
-                raise ValueError(f"catalog recipe not found or filtered out: {args.recipe_id}")
+                raise ValueError(
+                    f"catalog recipe not found or filtered out: {args.recipe_id}"
+                )
         elif not args.run_all:
             raise ValueError("select --recipe, --recipe-id, or --all")
         if not filtered:
             raise ValueError("no catalog recipes match the requested filters")
-        recipes = [(entry["recipe_id"], Path(entry["path"])) for entry in filtered]
+        recipes = [
+            (entry["recipe_id"], Path(entry["path"])) for entry in filtered
+        ]
 
     for recipe_id, path in recipes:
         output = args.output
         if args.run_all and output is not None:
-            output = output / recipe_id
+            output = output / _safe_output_component(recipe_id)
         print(f"\n=== {recipe_id} ===")
         workflow = build_workflow(
             args.action,
@@ -654,9 +718,7 @@ def _run_flag_mode(args: argparse.Namespace) -> int:
 def _prompt_text(prompt: str, default: str | None = None) -> str:
     suffix = f" [{default}]" if default is not None else ""
     value = input(f"{prompt}{suffix}: ").strip()
-    if not value and default is not None:
-        return default
-    return value
+    return default if not value and default is not None else value
 
 
 def _prompt_int(prompt: str, default: int) -> int:
@@ -669,25 +731,26 @@ def _prompt_int(prompt: str, default: int) -> int:
 
 
 def _menu_yes_no(title: str, *, default_yes: bool = False) -> bool:
-    options = ["No", "Yes"] if not default_yes else ["Yes", "No"]
+    options = ["Yes", "No"] if default_yes else ["No", "Yes"]
     selected = select_menu(title, options)
-    if selected is None:
-        return False
-    answer = options[selected] == "Yes"
-    return answer
+    return selected is not None and options[selected] == "Yes"
 
 
 def _interactive_main(args: argparse.Namespace) -> int:
     entries = load_catalog(args.catalog)
 
-    count_options = ["All precursor counts (2-6)"] + [f"{count} precursors" for count in PRECURSOR_COUNTS]
+    count_options = ["All precursor counts (2-6)"] + [
+        f"{count} precursors" for count in PRECURSOR_COUNTS
+    ]
     selected = select_menu("Select precursor count", count_options)
     if selected is None:
         return 0
     counts = None if selected == 0 else {PRECURSOR_COUNTS[selected - 1]}
     filtered = filter_catalog(entries, precursor_counts=counts)
 
-    categories = sorted({str(entry.get("category")) for entry in filtered if entry.get("category")})
+    categories = sorted(
+        {str(entry.get("category")) for entry in filtered if entry.get("category")}
+    )
     category_options = ["All categories"] + categories
     selected = select_menu("Select category", category_options)
     if selected is None:
@@ -696,20 +759,34 @@ def _interactive_main(args: argparse.Namespace) -> int:
         filtered = filter_catalog(filtered, category=category_options[selected])
 
     statuses = sorted(
-        {str(entry.get("chemistry_status")) for entry in filtered if entry.get("chemistry_status")}
+        {
+            str(entry.get("chemistry_status"))
+            for entry in filtered
+            if entry.get("chemistry_status")
+        }
     )
     status_options = ["All chemistry statuses"] + statuses
     selected = select_menu("Select chemistry status", status_options)
     if selected is None:
         return 0
     if selected:
-        filtered = filter_catalog(filtered, chemistry_status=status_options[selected])
+        filtered = filter_catalog(
+            filtered, chemistry_status=status_options[selected]
+        )
+
+    search_value = _prompt_text(
+        "Search recipe/target/formula/precursor (blank for all)"
+    )
+    if search_value:
+        filtered = filter_catalog(filtered, search=search_value)
 
     if not filtered:
         print("No recipes match those filters.")
         return 1
 
-    selected = select_menu("Select recipe", [_entry_label(entry) for entry in filtered])
+    selected = select_menu(
+        "Select recipe", [_entry_label(entry) for entry in filtered]
+    )
     if selected is None:
         return 0
     entry = filtered[selected]
@@ -734,18 +811,25 @@ def _interactive_main(args: argparse.Namespace) -> int:
 
     if action != "validate":
         seed = _prompt_int("Seed", 42)
-        default_output = f"build/master/{entry['recipe_id']}/{action}"
-        output = Path(_prompt_text("Output", default_output))
+        output = Path(
+            _prompt_text(
+                "Output", f"build/master/{entry['recipe_id']}/{action}"
+            )
+        )
         overwrite = _menu_yes_no("Overwrite existing output if present?")
 
     if action in {"hls", "product"}:
         signing_value = _prompt_text("Signing key PEM (blank for none)")
         signing_key = Path(signing_value) if signing_value else None
-        require_signature = _menu_yes_no("Require signature during verification?")
-        trusted_value = _prompt_text("Trusted public key PEM (blank for none)")
+        require_signature = _menu_yes_no(
+            "Require signature during verification?"
+        )
+        trusted_value = _prompt_text(
+            "Trusted public key PEM (blank for none)"
+        )
         trusted_public_key = Path(trusted_value) if trusted_value else None
 
-    selected = select_menu("Log level", list(LOG_LEVELS), interactive=None)
+    selected = select_menu("Log level", list(LOG_LEVELS))
     if selected is None:
         return 0
     log_level = LOG_LEVELS[selected]
@@ -766,7 +850,9 @@ def _interactive_main(args: argparse.Namespace) -> int:
     print("\nPlanned commands:")
     for command in workflow:
         print(f"  $ {shlex.join(command)}")
-    selected = select_menu("Execute workflow?", ["Run now", "Dry run only", "Cancel"])
+    selected = select_menu(
+        "Execute workflow?", ["Run now", "Dry run only", "Cancel"]
+    )
     if selected is None or selected == 2:
         return 0
     return run_commands(workflow, dry_run=selected == 1)
