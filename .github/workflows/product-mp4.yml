@@ -1,0 +1,91 @@
+name: Product MP4
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Install
+        run: python -m pip install -e '.[test,signature]'
+      - name: Tests
+        run: python -m pytest -q
+      - name: Compile Python modules
+        run: >-
+          python -m py_compile
+          ald_core.py
+          ald_hardened_core.py
+          ald_media_codecs.py
+          ald_media_staging.py
+          ald_compression.py
+          ald_media_controller.py
+          ald_media_cli.py
+          ald_hls_integration.py
+          ald_hls_packaging.py
+          ald_hls_bundle.py
+          ald_hls_signature.py
+          ald_hls_verify.py
+          ald_product_scene.py
+          ald_product_svg.py
+          ald_product_data.py
+          ald_product_render.py
+          ald_product_mp4.py
+          ald_product_bundle.py
+          ald_product_verify.py
+          ald_product_cli.py
+      - name: Product MP4 acceptance
+        run: |
+          rm -rf build/product-acceptance
+          mkdir -p build/product-acceptance
+          ald-media-controller compile-product recipes/majorana2_public_specs_reference_sim.json --seed 42 --output build/product-acceptance/bundle
+          ald-media-controller verify-product build/product-acceptance/bundle/bundle.json
+          ald-media-controller simulate recipes/majorana2_public_specs_reference_sim.json --seed 42 --output build/product-acceptance/direct
+          ald-media-controller simulate-product build/product-acceptance/bundle/bundle.json --seed 42 --output build/product-acceptance/product
+          cmp build/product-acceptance/direct/cycles.csv build/product-acceptance/product/cycles.csv
+          cmp build/product-acceptance/direct/surface-final.json build/product-acceptance/product/surface-final.json
+      - name: Assert product stream profile
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          product = Path("build/product-acceptance/bundle/product.mp4")
+          raw = subprocess.check_output([
+              "ffprobe", "-v", "error", "-show_streams", "-of", "json", str(product)
+          ], text=True)
+          streams = json.loads(raw)["streams"]
+          assert len(streams) == 3, streams
+          by_type = {stream["codec_type"]: stream for stream in streams}
+          assert set(by_type) == {"video", "audio", "data"}, by_type
+          assert by_type["video"]["codec_name"] == "h264", by_type["video"]
+          assert by_type["audio"]["codec_name"] == "aac", by_type["audio"]
+          assert by_type["data"]["codec_name"] == "bin_data", by_type["data"]
+          assert by_type["data"]["codec_tag_string"] == "gpmd", by_type["data"]
+          assert by_type["data"].get("tags", {}).get("handler_name") == "ALD Instruction Data", by_type["data"]
+          PY
+      - name: Assert public-reference safety binding
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          product = json.loads(Path("build/product-acceptance/bundle/product.json").read_text())
+          assert product["physical_fabrication_mapping"] is False
+          assert product["tetron"]["shape"] == "H-shaped superconducting island"
+          assert len(product["gate_layers"]) == 3
+          assert len(product["quantum_dots"]) == 5
+          assert sum(dot["shared_with_vertical_neighbor"] for dot in product["quantum_dots"]) == 3
+          PY
