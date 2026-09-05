@@ -9,6 +9,20 @@ from ald_media_controller import ExitCode, main
 RECIPE = Path("recipes/compounds/research/acceptance_three_precursor.json")
 
 
+def _json_keys(value):
+    if isinstance(value, dict):
+        keys = set(value)
+        for item in value.values():
+            keys.update(_json_keys(item))
+        return keys
+    if isinstance(value, list):
+        keys = set()
+        for item in value:
+            keys.update(_json_keys(item))
+        return keys
+    return set()
+
+
 @pytest.mark.requires_ffmpeg
 def test_multi_precursor_product_round_trip_matches_direct(tmp_path, capsys):
     direct = tmp_path / "direct"
@@ -30,9 +44,9 @@ def test_multi_precursor_product_round_trip_matches_direct(tmp_path, capsys):
         "trimethylaluminum",
         "water",
     ]
-    serialized = json.dumps(document, sort_keys=True)
+    keys = _json_keys(document)
     for forbidden in ("dose", "purge_ms", "temperature_c", "pressure_pa", "flow_sccm", "reaction_factors"):
-        assert forbidden not in serialized
+        assert forbidden not in keys
 
     assert main(["verify-product", str(bundle / "bundle.json")]) == int(ExitCode.OK)
     capsys.readouterr()
