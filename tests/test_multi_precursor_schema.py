@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 import math
 
@@ -99,3 +100,22 @@ def test_multi_precursor_schema_allows_repeated_precursor_position():
     raw["surface"]["reaction_factors"] = [1.4, 1.2, 1.1, 1.0]
     recipe = core.validate_recipe(raw)
     assert len(recipe.instructions[4]["arguments"]["exposures"]) == 4
+
+
+def test_multi_precursor_packet_round_trip_is_canonical():
+    recipe = core.validate_recipe(multi_recipe())
+    compiled = core.compile_recipe(recipe)
+    packet = compiled.packets[4]
+    assert packet.packet.opcode == "DEPOSITION_CYCLE"
+    assert len(packet.canonical_bytes) <= 800
+    assert core.canonical_packet_bytes(packet.packet) == packet.canonical_bytes
+
+
+def test_all_deposition_cycles_require_same_exposure_signature():
+    raw = multi_recipe()
+    second = deepcopy(raw["instructions"][4])
+    second["arguments"]["exposures"][0]["precursor"] = "B"
+    second["arguments"]["exposures"][1]["precursor"] = "A"
+    raw["instructions"].insert(5, second)
+    with pytest.raises(core.RecipeError, match="exposure signature"):
+        core.validate_recipe(raw)
