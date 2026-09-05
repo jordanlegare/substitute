@@ -1,0 +1,74 @@
+{
+  "protocol": "ALD-MEDIA/1",
+  "recipe_id": "compound-six-precursor-oxide-surrogate-001",
+  "metadata": {
+    "recipe_schema": "multi-precursor/1",
+    "target_material": "Hf-Zr-Al-Si multicomponent oxide simulation surrogate",
+    "target_formula": "Hf-Zr-Al-Si-O (conceptual surrogate)",
+    "chemistry_family": "multicomponent-oxide-surrogate",
+    "chemistry_status": "conceptual-multicomponent-surrogate",
+    "product_family": "multicomponent dielectric simulation",
+    "physical_fabrication_mapping": false,
+    "simulation_notice": "This is a conceptual simulator composition assembled from documented constituent ALD chemistries. It is not a validated physical synthesis route. Real chemical identities are descriptive; all executable values are synthetic and non-calibrated.",
+    "source_references": [
+      {"type": "public-source", "identifier": "PMCID:PMC6534251"},
+      {"type": "doi", "identifier": "10.1021/ja801616u"},
+      {"type": "doi", "identifier": "10.1039/B109846B"},
+      {"type": "public-source", "identifier": "PMCID:PMC4398678"}
+    ]
+  },
+  "precursors": {
+    "A": {"name": "hafnium tetrachloride", "formula": "HfCl4", "role": "hafnium source"},
+    "B": {"name": "water", "formula": "H2O", "role": "oxygen co-reactant"},
+    "C": {"name": "zirconium tetrachloride", "formula": "ZrCl4", "role": "zirconium source"},
+    "D": {"name": "trimethylaluminum", "formula": "Al(CH3)3", "role": "aluminum source"},
+    "E": {"name": "silicon tetrachloride", "formula": "SiCl4", "role": "silicon source"},
+    "F": {"name": "ozone", "formula": "O3", "role": "alternate oxygen co-reactant"}
+  },
+  "initial_conditions": {
+    "temperature_c": 25.0,
+    "pressure_pa": 101325.0
+  },
+  "limits": {
+    "min_purge_ms": 1000,
+    "max_temperature_c": 300.0,
+    "max_pressure_pa": 200000.0,
+    "max_cycles": 100,
+    "max_runtime_ms": 2000000,
+    "max_residual_fraction": 0.05,
+    "max_packet_bytes": 800
+  },
+  "surface": {
+    "model_version": "site-sequential/1",
+    "regions": 4,
+    "sites_per_region": 50000,
+    "transport_factors": [1.0, 0.9, 0.78, 0.66],
+    "blocked_fraction": 0.01,
+    "defect_fraction": 0.005,
+    "reaction_factors": [1.15, 1.0, 1.1, 1.0, 0.95, 1.05, 0.9, 1.0],
+    "growth_nm_per_completion_fraction": 0.1,
+    "purge_half_life_ms": 800,
+    "max_event_samples": 32
+  },
+  "instructions": [
+    {"opcode": "CONFIGURE", "arguments": {}},
+    {"opcode": "SET_TEMPERATURE", "arguments": {"target_c": 100.0, "ramp_c_per_min": 20.0, "tolerance_c": 1.0}},
+    {"opcode": "EVACUATE", "arguments": {"target_pa": 100.0, "timeout_ms": 100000}},
+    {"opcode": "STABILIZE", "arguments": {"duration_ms": 1000}},
+    {"opcode": "DEPOSITION_CYCLE", "arguments": {
+      "exposures": [
+        {"precursor": "A", "dose": 0.28, "purge_ms": 4000},
+        {"precursor": "B", "dose": 0.4, "purge_ms": 4000},
+        {"precursor": "C", "dose": 0.26, "purge_ms": 4000},
+        {"precursor": "B", "dose": 0.4, "purge_ms": 4000},
+        {"precursor": "D", "dose": 0.22, "purge_ms": 4000},
+        {"precursor": "B", "dose": 0.4, "purge_ms": 4000},
+        {"precursor": "E", "dose": 0.24, "purge_ms": 4000},
+        {"precursor": "F", "dose": 0.35, "purge_ms": 4000}
+      ],
+      "repeat": 3
+    }},
+    {"opcode": "MEASURE", "arguments": {"measurements": ["thickness_nm", "coverage", "defect_fraction"]}},
+    {"opcode": "SHUTDOWN", "arguments": {"heater_ramp_c_per_min": 20.0, "vent_target_pa": 101325.0}}
+  ]
+}

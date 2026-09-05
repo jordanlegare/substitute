@@ -1,0 +1,65 @@
+{
+  "protocol": "ALD-MEDIA/1",
+  "recipe_id": "compound-azo-three-precursor-001",
+  "metadata": {
+    "recipe_schema": "multi-precursor/1",
+    "target_material": "aluminum-doped zinc oxide",
+    "target_formula": "Al:ZnO",
+    "chemistry_family": "ternary-and-doped-oxide",
+    "chemistry_status": "established",
+    "product_family": "transparent conducting oxide",
+    "physical_fabrication_mapping": false,
+    "simulation_notice": "Real chemical identities are retained for chemistry recognition. All executable dose, purge, temperature, pressure, kinetic, transport, growth, and cycle values are synthetic simulator inputs and are not a physical ALD process window.",
+    "source_references": [
+      {"type": "public-source", "identifier": "PMCID:PMC7806672"},
+      {"type": "doi", "identifier": "10.1186/s11671-016-1625-0"}
+    ]
+  },
+  "precursors": {
+    "A": {"name": "diethylzinc", "formula": "Zn(C2H5)2", "role": "zinc source"},
+    "B": {"name": "water", "formula": "H2O", "role": "oxygen co-reactant"},
+    "C": {"name": "trimethylaluminum", "formula": "Al(CH3)3", "role": "aluminum dopant source"}
+  },
+  "initial_conditions": {
+    "temperature_c": 25.0,
+    "pressure_pa": 101325.0
+  },
+  "limits": {
+    "min_purge_ms": 1000,
+    "max_temperature_c": 300.0,
+    "max_pressure_pa": 200000.0,
+    "max_cycles": 100,
+    "max_runtime_ms": 2000000,
+    "max_residual_fraction": 0.05,
+    "max_packet_bytes": 800
+  },
+  "surface": {
+    "model_version": "site-sequential/1",
+    "regions": 4,
+    "sites_per_region": 50000,
+    "transport_factors": [1.0, 0.92, 0.82, 0.7],
+    "blocked_fraction": 0.01,
+    "defect_fraction": 0.005,
+    "reaction_factors": [1.2, 1.0, 1.1, 1.0],
+    "growth_nm_per_completion_fraction": 0.1,
+    "purge_half_life_ms": 800,
+    "max_event_samples": 32
+  },
+  "instructions": [
+    {"opcode": "CONFIGURE", "arguments": {}},
+    {"opcode": "SET_TEMPERATURE", "arguments": {"target_c": 100.0, "ramp_c_per_min": 20.0, "tolerance_c": 1.0}},
+    {"opcode": "EVACUATE", "arguments": {"target_pa": 100.0, "timeout_ms": 100000}},
+    {"opcode": "STABILIZE", "arguments": {"duration_ms": 1000}},
+    {"opcode": "DEPOSITION_CYCLE", "arguments": {
+      "exposures": [
+        {"precursor": "A", "dose": 0.35, "purge_ms": 4000},
+        {"precursor": "B", "dose": 0.45, "purge_ms": 4000},
+        {"precursor": "C", "dose": 0.25, "purge_ms": 4000},
+        {"precursor": "B", "dose": 0.45, "purge_ms": 4000}
+      ],
+      "repeat": 4
+    }},
+    {"opcode": "MEASURE", "arguments": {"measurements": ["thickness_nm", "coverage", "defect_fraction"]}},
+    {"opcode": "SHUTDOWN", "arguments": {"heater_ramp_c_per_min": 20.0, "vent_target_pa": 101325.0}}
+  ]
+}
