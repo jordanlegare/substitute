@@ -1,19 +1,25 @@
-"""Backward-compatible public core facade with multi-precursor schema support.
+"""Backward-compatible public core facade with multi-precursor support.
 
-The original implementation is retained byte-for-byte in ``_ald_legacy_core``.
-This facade re-exports that API and patches only the extension hooks required
-for ``multi-precursor/1`` recipes and ``DEPOSITION_CYCLE`` packets. Keeping
-legacy objects and algorithms in the original module preserves existing
-packet bytes, ALD1 roots, controller behavior, and report formats.
+The reviewed legacy implementation is retained byte-for-byte in
+``_ald_legacy_core``. This facade re-exports its API and installs narrowly
+scoped extension hooks for ``multi-precursor/1`` recipes,
+``DEPOSITION_CYCLE`` packets, and the ``site-sequential/1`` model.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
 import _ald_legacy_core as _legacy
+from ald_sequential_surface import (
+    SequentialSurfaceConfig,
+    SequentialSurfaceError,
+    SequentialSurfaceModel,
+    SequentialSurfaceSnapshot,
+)
 
 for _name in dir(_legacy):
     if not _name.startswith("__"):
@@ -25,6 +31,7 @@ _MULTI_SCHEMA = "multi-precursor/1"
 _ORIGINAL_VALIDATE_INSTRUCTION = _legacy._validate_instruction
 _ORIGINAL_VALIDATE_PACKET_ARGUMENTS = _legacy._validate_packet_arguments
 _ORIGINAL_IS_EXACT_PACKET_ARGUMENTS = _legacy._is_exact_packet_arguments
+_LEGACY_CONTROLLER = _legacy.SimulatedALDController
 
 
 def _is_multi_recipe(metadata: Mapping[str, Any]) -> bool:
@@ -264,10 +271,289 @@ def validate_recipe(raw: Mapping[str, Any]) -> _legacy.Recipe:
     )
 
 
+class ControllerState(str, Enum):
+    IDLE = "IDLE"
+    CONFIGURED = "CONFIGURED"
+    HEATING = "HEATING"
+    EVACUATING = "EVACUATING"
+    READY = "READY"
+    A_PULSE = "A_PULSE"
+    A_PURGE = "A_PURGE"
+    B_PULSE = "B_PULSE"
+    B_PURGE = "B_PURGE"
+    DEPOSITION_EXPOSURE = "DEPOSITION_EXPOSURE"
+    DEPOSITION_PURGE = "DEPOSITION_PURGE"
+    COMPLETE = "COMPLETE"
+    FAULT = "FAULT"
+    SHUTDOWN = "SHUTDOWN"
+
+
+ALLOWED_TRANSITIONS = MappingProxyType(
+    {
+        ControllerState.IDLE: frozenset({ControllerState.CONFIGURED, ControllerState.FAULT}),
+        ControllerState.CONFIGURED: frozenset({ControllerState.HEATING, ControllerState.FAULT}),
+        ControllerState.HEATING: frozenset({ControllerState.EVACUATING, ControllerState.FAULT}),
+        ControllerState.EVACUATING: frozenset({ControllerState.READY, ControllerState.FAULT}),
+        ControllerState.READY: frozenset(
+            {
+                ControllerState.A_PULSE,
+                ControllerState.DEPOSITION_EXPOSURE,
+                ControllerState.COMPLETE,
+                ControllerState.FAULT,
+            }
+        ),
+        ControllerState.A_PULSE: frozenset({ControllerState.A_PURGE, ControllerState.FAULT}),
+        ControllerState.A_PURGE: frozenset({ControllerState.B_PULSE, ControllerState.FAULT}),
+        ControllerState.B_PULSE: frozenset({ControllerState.B_PURGE, ControllerState.FAULT}),
+        ControllerState.B_PURGE: frozenset({ControllerState.READY, ControllerState.FAULT}),
+        ControllerState.DEPOSITION_EXPOSURE: frozenset(
+            {ControllerState.DEPOSITION_PURGE, ControllerState.FAULT}
+        ),
+        ControllerState.DEPOSITION_PURGE: frozenset(
+            {
+                ControllerState.DEPOSITION_EXPOSURE,
+                ControllerState.READY,
+                ControllerState.FAULT,
+            }
+        ),
+        ControllerState.COMPLETE: frozenset({ControllerState.SHUTDOWN}),
+        ControllerState.FAULT: frozenset({ControllerState.SHUTDOWN}),
+        ControllerState.SHUTDOWN: frozenset({ControllerState.IDLE}),
+    }
+)
+
+
+class _SequentialSnapshotAdapter:
+    def __init__(self, snapshot: SequentialSurfaceSnapshot, exposure_signature: tuple[str, ...]) -> None:
+        self._snapshot = snapshot
+        self.exposure_signature = exposure_signature
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._snapshot, name)
+
+    def as_dict(self) -> dict[str, object]:
+        result = self._snapshot.as_dict()
+        result["exposure_signature"] = list(self.exposure_signature)
+        return result
+
+
+class SimulatedALDController(_LEGACY_CONTROLLER):
+    """Legacy controller plus deterministic ``DEPOSITION_CYCLE`` execution."""
+
+    def _initialize_surface(self, compiled: _legacy.CompiledRecipe, seed: int) -> None:
+        recipe = compiled.recipe
+        if recipe.surface.get("model_version", "site-binomial/1") != "site-sequential/1":
+            return super()._initialize_surface(compiled, seed)
+
+        deposition = next(
+            (
+                instruction
+                for instruction in recipe.instructions
+                if instruction["opcode"] == "DEPOSITION_CYCLE"
+            ),
+            None,
+        )
+        if deposition is None:
+            raise _legacy.SurfaceModelError(
+                "site-sequential/1 requires at least one DEPOSITION_CYCLE"
+            )
+        signature = tuple(
+            item["precursor"] for item in deposition["arguments"]["exposures"]
+        )
+        surface = recipe.surface
+        try:
+            regions = surface.get("regions", 1)
+            transport = surface.get("transport_factors", (1.0,) * int(regions))
+            reaction_factors = surface.get(
+                "reaction_factors", (1.0,) * len(signature)
+            )
+            config = SequentialSurfaceConfig(
+                model_version="site-sequential/1",
+                regions=regions,
+                sites_per_region=surface.get("sites_per_region", 1000),
+                transport_factors=tuple(transport),
+                blocked_fraction=surface.get("blocked_fraction", 0.0),
+                defect_fraction=surface.get("defect_fraction", 0.0),
+                reaction_factors=tuple(reaction_factors),
+                growth_nm_per_completion_fraction=surface.get(
+                    "growth_nm_per_completion_fraction", 0.1
+                ),
+                purge_half_life_ms=surface.get("purge_half_life_ms", 800),
+                precursor_ids=tuple(recipe.precursors.keys()),
+                exposure_signature=signature,
+            )
+            self._surface = SequentialSurfaceModel(
+                config,
+                compiled.root_hash,
+                seed,
+                max_event_samples=surface.get("max_event_samples", 0),
+            )
+        except (SequentialSurfaceError, TypeError, ValueError) as error:
+            raise _legacy.SurfaceModelError(str(error)) from error
+        self._active_recipe = recipe
+        self.chamber.active_precursor = None
+        self._sequential_signature = signature
+
+    def incompatible_residual(self, next_precursor: str) -> float:
+        if type(self._surface) is SequentialSurfaceModel:
+            try:
+                return self._surface.max_incompatible_residual(next_precursor)
+            except SequentialSurfaceError as error:
+                raise _legacy.ControllerFault("INVALID_SURFACE_CONFIG") from error
+        return super().incompatible_residual(next_precursor)
+
+    def _execute_packet(self, packet: _legacy.Packet) -> None:
+        if packet.opcode != "DEPOSITION_CYCLE":
+            return super()._execute_packet(packet)
+        if self._shutdown_completed:
+            raise _legacy.ControllerFault("INVALID_TRANSITION")
+        self._execute_deposition_cycles(packet.arguments, packet.sequence)
+
+    def _require_sequential_surface(self) -> SequentialSurfaceModel:
+        if type(self._surface) is not SequentialSurfaceModel:
+            raise _legacy.ControllerFault("INVALID_SURFACE_CONFIG")
+        return self._surface
+
+    def _deposition_details(self, cycle: int, step_index: int, precursor: str) -> Mapping[str, Any]:
+        recipe = getattr(self, "_active_recipe", None)
+        if recipe is None or precursor not in recipe.precursors:
+            raise _legacy.ControllerFault("INVALID_SURFACE_CONFIG")
+        precursor_name = recipe.precursors[precursor].get("name")
+        if type(precursor_name) is not str or not precursor_name:
+            raise _legacy.ControllerFault("INVALID_SURFACE_CONFIG")
+        return {
+            "cycle": cycle,
+            "step_index": step_index,
+            "precursor": precursor,
+            "precursor_name": precursor_name,
+        }
+
+    def _append_cycle_metric(self, cycle: int) -> None:
+        surface = self._require_sequential_surface().snapshot()
+        self._cycles.append(
+            _legacy.CycleMetric(
+                cycle=cycle,
+                simulation_time_ms=self.chamber.simulation_time_ms,
+                coverage=surface.coverage,
+                thickness_nm=surface.thickness_nm,
+                utilization=surface.utilization,
+                defect_fraction=surface.defect_fraction,
+            )
+        )
+
+    def _execute_deposition_cycles(self, arguments: Mapping[str, Any], sequence: int) -> None:
+        if self.state is not ControllerState.READY:
+            raise _legacy.ControllerFault("INVALID_TRANSITION")
+        exposures = arguments["exposures"]
+        for _ in range(int(arguments["repeat"])):
+            self._cycle_index += 1
+            cycle = self._cycle_index
+            for step_index, exposure in enumerate(exposures):
+                precursor = exposure["precursor"]
+                self.assert_precursor_safe(precursor)
+                self.chamber.active_precursor = precursor
+                self.transition(
+                    ControllerState.DEPOSITION_EXPOSURE,
+                    packet_sequence=sequence,
+                    details=self._deposition_details(cycle, step_index, precursor),
+                )
+                try:
+                    self._require_sequential_surface().expose_step(
+                        cycle,
+                        step_index,
+                        precursor,
+                        float(exposure["dose"]),
+                    )
+                except SequentialSurfaceError as error:
+                    raise _legacy.ControllerFault("INVALID_SURFACE_CONFIG") from error
+                self.chamber.active_precursor = None
+                self.chamber.inert_purge_open = True
+                self.transition(
+                    ControllerState.DEPOSITION_PURGE,
+                    packet_sequence=sequence,
+                    details=self._deposition_details(cycle, step_index, precursor),
+                )
+                purge_ms = int(exposure["purge_ms"])
+                self._advance_time(purge_ms)
+                try:
+                    self._require_sequential_surface().purge(purge_ms)
+                except SequentialSurfaceError as error:
+                    raise _legacy.ControllerFault("INVALID_SURFACE_CONFIG") from error
+                self.chamber.inert_purge_open = False
+            self.transition(
+                ControllerState.READY,
+                packet_sequence=sequence,
+                details={"cycle": cycle},
+            )
+            self._append_cycle_metric(cycle)
+
+    def _shutdown(self, ramp_c_per_min: float, vent_target_pa: float) -> None:
+        self.chamber.active_precursor = None
+        super()._shutdown(ramp_c_per_min, vent_target_pa)
+
+    def _handle_fault(self, error: _legacy.ControllerFault) -> None:
+        self.chamber.active_precursor = None
+        super()._handle_fault(error)
+
+    def execute(self, compiled: _legacy.CompiledRecipe, seed: int) -> _legacy.SimulationResult:
+        result = super().execute(compiled, seed)
+        if type(result.surface) is not SequentialSurfaceSnapshot:
+            return result
+        signature = getattr(self, "_sequential_signature", result.surface.model_version and ())
+        adapted = _SequentialSnapshotAdapter(result.surface, tuple(signature))
+        return _legacy.SimulationResult(
+            audit=result.audit,
+            cycles=result.cycles,
+            surface=adapted,
+            fault=result.fault,
+            final_state=result.final_state,
+            chamber=result.chamber,
+            protocol=result.protocol,
+            recipe_id=result.recipe_id,
+            root_hash=result.root_hash,
+            seed=result.seed,
+            model_version=result.model_version,
+        )
+
+
+def _expanded_cycle_count(recipe: _legacy.Recipe) -> int:
+    return sum(
+        int(instruction["arguments"]["repeat"])
+        for instruction in recipe.instructions
+        if instruction["opcode"] in {"ALD_CYCLE", "DEPOSITION_CYCLE"}
+    )
+
+
+def _expanded_runtime_ms(recipe: _legacy.Recipe) -> int:
+    runtime = 0
+    for instruction in recipe.instructions:
+        opcode = instruction["opcode"]
+        arguments = instruction["arguments"]
+        if opcode == "EVACUATE":
+            runtime += int(arguments["timeout_ms"])
+        elif opcode == "STABILIZE":
+            runtime += int(arguments["duration_ms"])
+        elif opcode == "ALD_CYCLE":
+            runtime += int(arguments["repeat"]) * sum(
+                int(arguments[field])
+                for field in ("pulse_a_ms", "purge_a_ms", "pulse_b_ms", "purge_b_ms")
+            )
+        elif opcode == "DEPOSITION_CYCLE":
+            runtime += int(arguments["repeat"]) * sum(
+                int(item["purge_ms"]) for item in arguments["exposures"]
+            )
+    return runtime
+
+
 _legacy._validate_packet_arguments = _validate_packet_arguments
 _legacy._is_exact_packet_arguments = _is_exact_packet_arguments
 _legacy._validate_instruction = _validate_instruction
 _legacy.validate_recipe = validate_recipe
+_legacy.ControllerState = ControllerState
+_legacy.ALLOWED_TRANSITIONS = ALLOWED_TRANSITIONS
+_legacy.SimulatedALDController = SimulatedALDController
+_legacy._expanded_cycle_count = _expanded_cycle_count
+_legacy._expanded_runtime_ms = _expanded_runtime_ms
 
 globals().update(
     {
@@ -277,5 +563,10 @@ globals().update(
         "_validate_precursors": _validate_precursors,
         "_validate_deposition_cycle_arguments": _validate_deposition_cycle_arguments,
         "validate_recipe": validate_recipe,
+        "ControllerState": ControllerState,
+        "ALLOWED_TRANSITIONS": ALLOWED_TRANSITIONS,
+        "SimulatedALDController": SimulatedALDController,
+        "_expanded_cycle_count": _expanded_cycle_count,
+        "_expanded_runtime_ms": _expanded_runtime_ms,
     }
 )
