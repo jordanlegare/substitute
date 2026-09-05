@@ -2,7 +2,7 @@
 
 The original implementation is retained byte-for-byte in ``_ald_legacy_core``.
 This facade re-exports that API and patches only the extension hooks required
-for ``multi-precursor/1`` recipes and ``DEPOSITION_CYCLE`` packets.  Keeping
+for ``multi-precursor/1`` recipes and ``DEPOSITION_CYCLE`` packets. Keeping
 legacy objects and algorithms in the original module preserves existing
 packet bytes, ALD1 roots, controller behavior, and report formats.
 """
@@ -15,9 +15,6 @@ from typing import Any
 
 import _ald_legacy_core as _legacy
 
-# Re-export the complete legacy module, including private helpers used by the
-# existing test suite and companion modules.  Public classes remain the exact
-# legacy class objects rather than wrappers/subclasses.
 for _name in dir(_legacy):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_legacy, _name)
@@ -208,11 +205,10 @@ def validate_recipe(raw: Mapping[str, Any]) -> _legacy.Recipe:
     _legacy._validate_json_value(surface, "surface")
     precursors = _validate_precursors(metadata, recipe["precursors"])
 
-    if _is_multi_recipe(metadata):
-        if surface.get("model_version") != "site-sequential/1":
-            raise _legacy.RecipeError(
-                "multi-precursor recipes require surface.model_version site-sequential/1"
-            )
+    if _is_multi_recipe(metadata) and surface.get("model_version") != "site-sequential/1":
+        raise _legacy.RecipeError(
+            "multi-precursor recipes require surface.model_version site-sequential/1"
+        )
 
     limits = _legacy._validate_limits(recipe["limits"])
     initial = _legacy._require_exact_keys(
@@ -234,12 +230,21 @@ def validate_recipe(raw: Mapping[str, Any]) -> _legacy.Recipe:
     instructions: list[Mapping[str, Any]] = []
     expanded_cycles = 0
     runtime_ms = 0
+    exposure_signature: tuple[str, ...] | None = None
     for instruction in recipe["instructions"]:
         normalized, duration = _validate_instruction(instruction, limits, precursors)
         instructions.append(normalized)
         runtime_ms += duration
         if normalized["opcode"] in {"ALD_CYCLE", "DEPOSITION_CYCLE"}:
             expanded_cycles += normalized["arguments"]["repeat"]
+        if normalized["opcode"] == "DEPOSITION_CYCLE":
+            signature = tuple(item["precursor"] for item in normalized["arguments"]["exposures"])
+            if exposure_signature is None:
+                exposure_signature = signature
+            elif signature != exposure_signature:
+                raise _legacy.RecipeError(
+                    "all DEPOSITION_CYCLE instructions must use the same exposure signature"
+                )
         if expanded_cycles > limits.max_cycles:
             raise _legacy.RecipeLimitError("expanded cycles exceed max_cycles")
         if runtime_ms > limits.max_runtime_ms:
@@ -259,14 +264,11 @@ def validate_recipe(raw: Mapping[str, Any]) -> _legacy.Recipe:
     )
 
 
-# Patch the legacy module globals used dynamically by Packet/compile/controller
-# integrity code while retaining the original class/function objects.
 _legacy._validate_packet_arguments = _validate_packet_arguments
 _legacy._is_exact_packet_arguments = _is_exact_packet_arguments
 _legacy._validate_instruction = _validate_instruction
 _legacy.validate_recipe = validate_recipe
 
-# Ensure callers importing names after the patch receive extension-aware hooks.
 globals().update(
     {
         "_validate_packet_arguments": _validate_packet_arguments,
