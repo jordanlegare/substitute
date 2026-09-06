@@ -575,8 +575,13 @@ def build_frozen_evidence(
         material_by_formula[reduced] = entry
 
     recipe_entries = _catalog_entries(recipe_catalog, "recipe_catalog")
+    historical_recipe_entries = [
+        entry
+        for entry in recipe_entries
+        if entry.get("recipe_origin") != "evidence-expansion"
+    ]
     existing_targets: set[str] = set()
-    for entry in recipe_entries:
+    for entry in historical_recipe_entries:
         reduced = _fixed_reduced_formula(entry.get("target_formula"))
         if reduced is not None and reduced in material_by_formula:
             existing_targets.add(reduced)
@@ -668,7 +673,7 @@ def build_frozen_evidence(
 
     material_count = len(material_by_formula)
     existing_material_count = len(existing_targets)
-    final_recipe_count = len(recipe_entries) + len(selected_targets)
+    final_recipe_count = len(historical_recipe_entries) + len(selected_targets)
     remaining_identity_only = max(
         0, material_count - len(existing_targets.union(selected_targets))
     )
