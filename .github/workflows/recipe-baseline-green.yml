@@ -1,0 +1,61 @@
+name: Recipe baseline green
+
+on:
+  push:
+    branches:
+      - automation/atomiclimits-live-discovery
+
+permissions:
+  contents: write
+
+jobs:
+  patch-feature:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/recipe-evidence-expansion
+          fetch-depth: 0
+      - name: Exclude expansion outputs from historical baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tools/refresh_recipe_evidence.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''    recipe_entries = _catalog_entries(recipe_catalog, "recipe_catalog")
+    existing_targets: set[str] = set()
+    for entry in recipe_entries:
+        reduced = _fixed_reduced_formula(entry.get("target_formula"))
+        if reduced is not None and reduced in material_by_formula:
+            existing_targets.add(reduced)
+'''
+          new = '''    recipe_entries = _catalog_entries(recipe_catalog, "recipe_catalog")
+    historical_recipe_entries = [
+        entry
+        for entry in recipe_entries
+        if entry.get("recipe_origin") != "evidence-expansion"
+    ]
+    existing_targets: set[str] = set()
+    for entry in historical_recipe_entries:
+        reduced = _fixed_reduced_formula(entry.get("target_formula"))
+        if reduced is not None and reduced in material_by_formula:
+            existing_targets.add(reduced)
+'''
+          if old not in text:
+              raise SystemExit("historical baseline block not found")
+          text = text.replace(old, new, 1)
+          old_count = '    final_recipe_count = len(recipe_entries) + len(selected_targets)\n'
+          new_count = '    final_recipe_count = len(historical_recipe_entries) + len(selected_targets)\n'
+          if old_count not in text:
+              raise SystemExit("final recipe count line not found")
+          text = text.replace(old_count, new_count, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tools/refresh_recipe_evidence.py
+          git commit -m "fix: keep expansion outputs out of recipe baseline"
+          git push origin HEAD:feature/recipe-evidence-expansion
