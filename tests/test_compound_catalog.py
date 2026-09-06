@@ -3,7 +3,9 @@ import json
 from pathlib import Path
 
 import ald_core as core
-from tools.build_compound_catalog import build_compound_catalog, canonical_catalog_bytes
+import ald_recipe_evidence as evidence_core
+from tools.build_compound_catalog import _entry, build_compound_catalog, canonical_catalog_bytes
+from tools.build_recipe_expansion import build_recipe
 
 
 ROOT = Path("recipes/compounds")
@@ -35,8 +37,35 @@ def deposition_exposures(raw):
     return cycles[0]["arguments"]["exposures"]
 
 
+def selected_expansion_record():
+    return evidence_core.validate_evidence_record(
+        {
+            "target_material": "titanium dioxide",
+            "target_formula": "TiO2",
+            "process_family": "thermal-ald",
+            "reactants": [
+                {"label": "TiCl4", "name": "titanium tetrachloride", "formula": "TiCl4", "role": "reactant-a"},
+                {"label": "H2O", "name": "water", "formula": "H2O", "role": "reactant-b"},
+            ],
+            "publications": [{"type": "doi", "identifier": "10.1234/tio2", "direct": True}],
+            "discovery_sources": ["atomiclimits"],
+            "evidence_grade": "R3",
+            "selection_status": "selected",
+        }
+    )
+
+
 def test_checked_in_catalog_is_current_and_canonical():
     assert CATALOG.read_bytes() == canonical_catalog_bytes(build_compound_catalog())
+
+
+def test_expansion_catalog_entry_preserves_evidence_linkage():
+    record = selected_expansion_record()
+    recipe = core.validate_recipe(build_recipe(record))
+    entry = _entry(Path("recipes/compounds/oxides/tio2_evidence_expansion.json"), recipe)
+    assert entry["recipe_origin"] == "evidence-expansion"
+    assert entry["evidence_record_id"] == record["evidence_id"]
+    assert entry["process_family"] == "thermal-ald"
 
 
 def test_catalog_entries_are_unique_and_non_operational():
