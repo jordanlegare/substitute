@@ -513,8 +513,8 @@ def _print_chemistry(entry: dict[str, Any]) -> None:
     if formula:
         print(f"  material: ald-master materials show {formula}")
     print(
-        "  boundary: literature-recognition chemistry; simulator execution values "
-        "are synthetic and are not shown here"
+        "  boundary: literature-recognition chemistry for simulation only; "
+        "simulator execution values are synthetic and are not shown here"
     )
 
 
