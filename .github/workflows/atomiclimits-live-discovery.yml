@@ -1,0 +1,61 @@
+name: AtomicLimits live transport discovery
+
+on:
+  push:
+    branches:
+      - automation/atomiclimits-live-discovery
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Discover page scripts and API-like endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          import urllib.parse
+          import urllib.request
+
+          root = "https://www.atomiclimits.com/alddatabase/"
+          req = urllib.request.Request(root, headers={"User-Agent": "Mozilla/5.0"})
+          html = urllib.request.urlopen(req, timeout=60).read().decode("utf-8", "replace")
+          print("HTML_BYTES", len(html.encode()))
+          scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)', html, flags=re.I)
+          print("SCRIPT_COUNT", len(scripts))
+          for src in scripts:
+              print("SCRIPT", urllib.parse.urljoin(root, src))
+
+          patterns = (
+              r'https?://[^"\'\\\s]+',
+              r'/wp-json/[^"\'\\\s]+',
+              r'/api/[^"\'\\\s]+',
+              r'fetch\([^)]{0,300}\)',
+              r'axios\.[a-z]+\([^)]{0,300}\)',
+          )
+          seen = set()
+          for src in scripts:
+              url = urllib.parse.urljoin(root, src)
+              try:
+                  body = urllib.request.urlopen(
+                      urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}),
+                      timeout=60,
+                  ).read().decode("utf-8", "replace")
+              except Exception as exc:
+                  print("SCRIPT_ERROR", url, type(exc).__name__, str(exc)[:160])
+                  continue
+              print("SCRIPT_BYTES", len(body.encode()), url)
+              low = body.casefold()
+              if not any(token in low for token in ("alddatabase", "process", "reactant", "precursor", "wp-json", "fetch(", "axios")):
+                  continue
+              for pattern in patterns:
+                  for hit in re.findall(pattern, body, flags=re.I):
+                      value = hit if isinstance(hit, str) else " ".join(hit)
+                      if value in seen:
+                          continue
+                      seen.add(value)
+                      if any(token in value.casefold() for token in ("atomic", "ald", "process", "reactant", "precursor", "api", "wp-json", "fetch", "axios")):
+                          print("CANDIDATE", value[:1000])
+          PY
