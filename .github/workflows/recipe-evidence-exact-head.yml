@@ -16,7 +16,7 @@ jobs:
       - name: Check out exact feature SHA
         uses: actions/checkout@v4
         with:
-          ref: c1aaccc1192527dd4e8c0eb44350db6570a343f1
+          ref: ae0c365f03c3a05652bd00d8be785096c5d2c916
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
@@ -29,7 +29,7 @@ jobs:
         run: python -m pip install -e '.[test,signature]'
       - name: Verify exact checkout and base ref
         run: |
-          test "$(git rev-parse HEAD)" = "c1aaccc1192527dd4e8c0eb44350db6570a343f1"
+          test "$(git rev-parse HEAD)" = "ae0c365f03c3a05652bd00d8be785096c5d2c916"
           git fetch origin feature/material-catalog-8000:refs/remotes/origin/feature/material-catalog-8000
           git diff --check origin/feature/material-catalog-8000...HEAD
       - name: Verify canonical evidence and catalogs
@@ -44,6 +44,7 @@ jobs:
         run: |
           mkdir -p build/exact-head
           ald-master chemistry report
+          ald-master chemistry report --json > build/exact-head/chemistry-report.json
           ald-master chemistry search HfO2 --limit 5
           ald-master chemistry show HfO2
           ald-master chemistry sources HfO2
@@ -51,6 +52,11 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
+
+          report = json.loads(Path('build/exact-head/chemistry-report.json').read_text())
+          assert report['total_executable_recipes'] == 250, report
+          assert report['recipe_backed_materials_in_identity_catalog'] == 186, report
+          assert report['remaining_identity_only_materials'] == 7814, report
 
           payload = json.loads(Path('build/exact-head/chemistry-show.json').read_text())
           forbidden = {
