@@ -1,0 +1,102 @@
+name: Recipe evidence raw acquisition
+
+on:
+  push:
+    branches:
+      - automation/recipe-evidence-raw-acquisition
+
+permissions:
+  contents: write
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Substitute
+        uses: actions/checkout@v4
+        with:
+          ref: automation/recipe-evidence-raw-acquisition
+          path: substitute
+      - name: Checkout pinned AWASES source
+        uses: actions/checkout@v4
+        with:
+          repository: jd-coderepos/awases-ald
+          ref: 1c67909db3b6219f168907f0552550bf82edb487
+          path: awases
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install focused test dependencies
+        working-directory: substitute
+        run: python -m pip install -e '.[test]'
+      - name: Build frozen evidence from raw export
+        working-directory: substitute
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import ald_recipe_evidence as evidence
+          from tools.refresh_recipe_evidence import parse_awases_rows, build_frozen_evidence
+
+          source = Path('../awases/step 1/data/1-raw-data.csv')
+          source_bytes = source.read_bytes()
+          with source.open(encoding='ISO-8859-1', newline='') as stream:
+              records = parse_awases_rows(stream)
+          material_catalog = json.loads(Path('materials/catalog.json').read_text(encoding='utf-8'))
+          recipe_catalog = json.loads(Path('recipes/compounds/catalog.json').read_text(encoding='utf-8'))
+          evidence_doc, manifest, audit = build_frozen_evidence(
+              records,
+              material_catalog,
+              recipe_catalog,
+              source_metadata={
+                  'awases_repository': 'jd-coderepos/awases-ald',
+                  'awases_ref': '1c67909db3b6219f168907f0552550bf82edb487',
+                  'awases_path': 'step 1/data/1-raw-data.csv',
+                  'awases_blob_sha': 'efb2b34bf7a47b5d70038b1b340574f514bb94df',
+                  'awases_content_sha256': hashlib.sha256(source_bytes).hexdigest(),
+                  'awases_license': 'MIT',
+                  'awases_license_blob_sha': '1fa6b40798b07cdc5e5699be79c1693cc2757e29',
+              },
+          )
+          out = Path('recipes/evidence')
+          (out / 'process-evidence.json').write_bytes(evidence.canonical_json_bytes(evidence_doc))
+          (out / 'source-manifest.json').write_bytes(evidence.canonical_json_bytes(manifest))
+          (out / 'acquisition-audit.json').write_bytes(evidence.canonical_json_bytes(audit))
+          print(json.dumps(audit, indent=2, sort_keys=True))
+          PY
+      - name: Generate recipes and catalogs
+        working-directory: substitute
+        run: |
+          python tools/build_recipe_expansion.py
+          python tools/build_compound_catalog.py
+          python tools/build_material_catalog.py --target-count 8000
+      - name: Verify evidence and canonical artifacts
+        working-directory: substitute
+        run: |
+          python tools/audit_recipe_evidence.py
+          python tools/build_recipe_expansion.py --check
+          python tools/build_compound_catalog.py --check
+          python tools/build_material_catalog.py --check --target-count 8000
+          git diff --check
+      - name: Focused tests
+        working-directory: substitute
+        run: |
+          python -m pytest -q \
+            tests/test_recipe_evidence.py \
+            tests/test_recipe_evidence_refresh.py \
+            tests/test_recipe_evidence_audit.py \
+            tests/test_recipe_expansion.py \
+            tests/test_chemistry_catalog.py \
+            tests/test_chemistry_cli.py \
+            tests/test_material_cli.py \
+            tests/test_compound_catalog.py
+      - name: Commit verified raw evidence expansion
+        working-directory: substitute
+        run: |
+          rm .github/workflows/recipe-evidence-raw-acquisition.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add recipes/evidence recipes/compounds materials/catalog.json materials/build-audit.json materials/source-manifest.json .github/workflows/recipe-evidence-raw-acquisition.yml
+          git commit -m 'data: expand raw literature-backed material recipes'
+          git push origin HEAD:automation/recipe-evidence-raw-acquisition
