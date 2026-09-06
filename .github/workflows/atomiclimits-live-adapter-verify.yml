@@ -1,0 +1,31 @@
+name: AtomicLimits live adapter verify
+
+on:
+  push:
+    branches:
+      - automation/atomiclimits-live-discovery
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: b7775622e4ef50f09f8fd0c4eeef969fee6340a6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: python -m pip install -e '.[test,signature]'
+      - name: Verify live adapter and focused suite
+        run: |
+          python -m pytest \
+            tests/test_recipe_evidence.py \
+            tests/test_recipe_evidence_refresh.py \
+            tests/test_recipe_evidence_audit.py \
+            tests/test_recipe_expansion.py \
+            tests/test_compound_catalog.py \
+            tests/test_chemistry_catalog.py \
+            tests/test_chemistry_cli.py \
+            -q
+          python tools/audit_recipe_evidence.py
