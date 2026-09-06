@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: b7775622e4ef50f09f8fd0c4eeef969fee6340a6
+          ref: f630f7e5f005a1e5ac49a7ac4455f35eed51675d
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -26,17 +26,13 @@ jobs:
           import urllib.request
           from pathlib import Path
 
-          from tools.refresh_recipe_evidence import (
-              build_frozen_evidence,
-              parse_atomiclimits_api_payload,
-          )
+          from tools.refresh_recipe_evidence import build_frozen_evidence, parse_atomiclimits_api_payload
 
           url = "https://www.atomiclimits.com/alddatabase/api/processes.php"
-          request = urllib.request.Request(
-              url,
-              headers={"User-Agent": "Substitute recipe evidence audit/1.0", "Accept": "application/json"},
-          )
-          raw = urllib.request.urlopen(request, timeout=120).read()
+          raw = urllib.request.urlopen(
+              urllib.request.Request(url, headers={"User-Agent":"Substitute recipe evidence audit/1.0","Accept":"application/json"}),
+              timeout=120,
+          ).read()
           payload = json.loads(raw)
           records = parse_atomiclimits_api_payload(payload)
           materials = json.loads(Path("materials/catalog.json").read_text(encoding="utf-8"))
@@ -46,28 +42,27 @@ jobs:
               materials,
               recipes,
               source_metadata={
-                  "atomiclimits_database_doi": "10.6100/alddatabase",
-                  "transport": "atomiclimits-live-api",
-                  "api_url": url,
-                  "api_sha256": hashlib.sha256(raw).hexdigest(),
-                  "api_process_count": len(payload.get("processes", [])),
-                  "api_reference_count": len(payload.get("references", [])),
+                  "atomiclimits_database_doi":"10.6100/alddatabase",
+                  "transport":"atomiclimits-live-api",
+                  "api_url":url,
+                  "api_sha256":hashlib.sha256(raw).hexdigest(),
+                  "api_process_count":len(payload.get("processes",[])),
+                  "api_reference_count":len(payload.get("references",[])),
               },
           )
-          selected = [r for r in evidence_doc["records"] if r["selection_status"] == "selected"]
-          covered = [r for r in evidence_doc["records"] if r["selection_status"] == "covered-existing"]
-          rejected = [r for r in evidence_doc["records"] if r["selection_status"] == "rejected"]
-          print("LIVE_API_SHA256", hashlib.sha256(raw).hexdigest())
-          print("RAW_PROCESSES", len(payload.get("processes", [])))
-          print("RAW_REFERENCES", len(payload.get("references", [])))
-          print("PARSED_EVIDENCE_RECORDS", len(records))
-          print("FROZEN_RECORDS_IN_8000_UNIVERSE", len(evidence_doc["records"]))
-          print("SELECTED_NEW_TARGETS", len(selected))
-          print("COVERED_EXISTING_RECORDS", len(covered))
-          print("REJECTED_RECORDS", len(rejected))
-          print("SELECTED_FAMILY", dict(sorted(collections.Counter(r["process_family"] for r in selected).items())))
-          print("SELECTED_GRADES", dict(sorted(collections.Counter(r["evidence_grade"] for r in selected).items())))
-          print("SELECTED_TARGETS", ",".join(sorted(r["target_reduced_formula"] for r in selected)))
-          print("AUDIT", json.dumps(audit, sort_keys=True))
-          print("MANIFEST_SOURCE", json.dumps(manifest.get("sources", {}), sort_keys=True))
+          selected=[r for r in evidence_doc["records"] if r["selection_status"]=="selected"]
+          covered=[r for r in evidence_doc["records"] if r["selection_status"]=="covered-existing"]
+          rejected=[r for r in evidence_doc["records"] if r["selection_status"]=="rejected"]
+          print("LIVE_API_SHA256",hashlib.sha256(raw).hexdigest())
+          print("RAW_PROCESSES",len(payload.get("processes",[])))
+          print("RAW_REFERENCES",len(payload.get("references",[])))
+          print("PARSED_EVIDENCE_RECORDS",len(records))
+          print("FROZEN_RECORDS_IN_8000_UNIVERSE",len(evidence_doc["records"]))
+          print("SELECTED_NEW_TARGETS",len(selected))
+          print("COVERED_EXISTING_RECORDS",len(covered))
+          print("REJECTED_RECORDS",len(rejected))
+          print("SELECTED_FAMILY",dict(sorted(collections.Counter(r["process_family"] for r in selected).items())))
+          print("SELECTED_GRADES",dict(sorted(collections.Counter(r["evidence_grade"] for r in selected).items())))
+          print("AUDIT",json.dumps(audit,sort_keys=True))
+          print("MANIFEST_SOURCE",json.dumps(manifest.get("sources",{}),sort_keys=True))
           PY
