@@ -1,0 +1,162 @@
+name: Plasma-ALD incremental dry run
+
+on:
+  push:
+    branches:
+      - automation/atomiclimits-live-discovery
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f630f7e5f005a1e5ac49a7ac4455f35eed51675d
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install parser helper
+        run: python -m pip install beautifulsoup4
+      - name: Measure incremental direct PEALD evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import collections
+          import json
+          import re
+          import time
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          from bs4 import BeautifulSoup
+          import ald_materials as materials
+          from tools.refresh_recipe_evidence import build_frozen_evidence, parse_atomiclimits_api_payload
+
+          HEADERS={"User-Agent":"Mozilla/5.0 (Substitute evidence audit/1.0)","Accept":"text/html,application/json,*/*"}
+          BASE="https://www.plasma-ald.com/"
+
+          def fetch(url, attempts=3):
+              for attempt in range(attempts):
+                  try:
+                      return urllib.request.urlopen(urllib.request.Request(url,headers=HEADERS),timeout=60).read()
+                  except Exception:
+                      if attempt+1==attempts:
+                          raise
+                      time.sleep(1.5*(attempt+1))
+
+          def fixed_formula(value):
+              value=re.sub(r"\s+","",value or "")
+              try:
+                  reduced,elements=materials.reduce_formula(value)
+              except ValueError:
+                  return None
+              return reduced if len(elements)>=2 else None
+
+          material_doc=json.loads(Path("materials/catalog.json").read_text(encoding="utf-8"))
+          universe={str(e["reduced_formula"]) for e in material_doc["entries"]}
+          recipe_doc=json.loads(Path("recipes/compounds/catalog.json").read_text(encoding="utf-8"))
+          historical=set()
+          for entry in recipe_doc["entries"]:
+              if entry.get("recipe_origin")=="evidence-expansion":
+                  continue
+              reduced=fixed_formula(str(entry.get("target_formula", "")))
+              if reduced:
+                  historical.add(reduced)
+
+          atomic_url="https://www.atomiclimits.com/alddatabase/api/processes.php"
+          atomic_payload=json.loads(fetch(atomic_url))
+          atomic_records=parse_atomiclimits_api_payload(atomic_payload)
+          atomic_evidence,_,_=build_frozen_evidence(
+              atomic_records, material_doc, recipe_doc,
+              source_metadata={"transport":"atomiclimits-live-api"},
+          )
+          atomic_selected={r["target_reduced_formula"] for r in atomic_evidence["records"] if r["selection_status"]=="selected"}
+          covered=historical|atomic_selected
+          print("HISTORICAL_FIXED_TARGETS",len(historical))
+          print("ATOMICLIMITS_SELECTED_NEW",len(atomic_selected))
+
+          composition=BeautifulSoup(fetch(urllib.parse.urljoin(BASE,"composition.php")),"html.parser")
+          materials_by_code={}
+          for link in composition.select('a[href*="search_comp_pubsv4.php?compcode="]'):
+              href=link.get("href","")
+              code=urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("compcode",[""])[0]
+              label=link.get_text("",strip=True)
+              reduced=fixed_formula(label)
+              if code and reduced and reduced in universe:
+                  materials_by_code[code]=(label,reduced)
+          print("PLASMA_ALD_FIXED_IN_UNIVERSE_MATERIAL_LINKS",len(materials_by_code))
+
+          publication_targets=collections.defaultdict(set)
+          for index,(code,(label,reduced)) in enumerate(sorted(materials_by_code.items()),1):
+              if reduced in covered:
+                  continue
+              url=urllib.parse.urljoin(BASE,f"search_comp_pubsv4.php?compcode={urllib.parse.quote(code)}")
+              soup=BeautifulSoup(fetch(url),"html.parser")
+              for link in soup.select('a[href*="display_publicationv4.php?code="]'):
+                  href=link.get("href","")
+                  pubcode=urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("code",[""])[0]
+                  if pubcode:
+                      publication_targets[pubcode].add(reduced)
+              if index%25==0:
+                  print("MATERIAL_PROGRESS",index,"/",len(materials_by_code),"PUBS",len(publication_targets))
+              time.sleep(0.03)
+          print("INCREMENTAL_PUBLICATION_CODES_TO_CHECK",len(publication_targets))
+
+          candidates=[]
+          rejected=collections.Counter()
+          for index,(pubcode,target_candidates) in enumerate(sorted(publication_targets.items()),1):
+              url=urllib.parse.urljoin(BASE,f"display_publicationv4.php?code={urllib.parse.quote(pubcode)}")
+              soup=BeautifulSoup(fetch(url),"html.parser")
+              doi_link=soup.select_one('a[href*="doi.org/"]')
+              if doi_link is None:
+                  rejected["no-doi"]+=1
+                  continue
+              doi_href=doi_link.get("href","")
+              match=re.search(r"doi\.org/(10\.[^?#\s]+)",doi_href,re.I)
+              if not match:
+                  rejected["bad-doi"]+=1
+                  continue
+              doi=urllib.parse.unquote(match.group(1)).strip().rstrip("./")
+
+              found_for_pub=False
+              for card in soup.select("div.card"):
+                  header=card.select_one("div.card-header")
+                  if header is None or "plasma" not in header.get_text(" ",strip=True).casefold():
+                      continue
+                  film_link=header.select_one('a[href*="search_comp_pubsv4.php?compcode="]')
+                  if film_link is None:
+                      continue
+                  film_label=film_link.get_text("",strip=True)
+                  reduced=fixed_formula(film_label)
+                  if reduced is None or reduced not in target_candidates or reduced in covered:
+                      continue
+                  chemistry=[]
+                  for chem in card.select('a[href*="search_chem_pubsv4.php?chemcode="]'):
+                      label=chem.get_text(" ",strip=True)
+                      label=re.sub(r"\s+"," ",label).strip()
+                      if label and label not in chemistry:
+                          chemistry.append(label)
+                  if not chemistry:
+                      rejected["no-chemistry"]+=1
+                      continue
+                  candidates.append({"target":film_label,"reduced":reduced,"doi":doi,"reactants":chemistry,"publication_code":pubcode,"url":url})
+                  found_for_pub=True
+              if not found_for_pub:
+                  rejected["no-matching-plasma-card"]+=1
+              if index%100==0:
+                  print("PUBLICATION_PROGRESS",index,"/",len(publication_targets),"CANDIDATES",len(candidates))
+              time.sleep(0.03)
+
+          by_target=collections.defaultdict(list)
+          for c in candidates:
+              by_target[c["reduced"]].append(c)
+          print("PLASMA_ALD_DIRECT_CANDIDATE_RECORDS",len(candidates))
+          print("PLASMA_ALD_INCREMENTAL_DISTINCT_TARGETS",len(by_target))
+          print("REJECTIONS",dict(sorted(rejected.items())))
+          print("INCREMENTAL_TARGETS",",".join(sorted(by_target)))
+          for reduced in sorted(by_target):
+              best=sorted(by_target[reduced],key=lambda c:(len(c["reactants"]),c["doi"],c["publication_code"]))[0]
+              print("SAMPLE",json.dumps(best,sort_keys=True,ensure_ascii=False)[:2500])
+          PY
