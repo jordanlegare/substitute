@@ -21,6 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import base64
           from pathlib import Path
 
           path = Path("tools/refresh_recipe_evidence.py")
@@ -30,145 +31,7 @@ jobs:
           marker = "\ndef _safe_source_provenance(row: Mapping[str, object]) -> dict[str, object]:\n"
           if marker not in text:
               raise SystemExit("insertion marker not found")
-          addition = r'''
-
-def _atomiclimits_live_family(process: Mapping[str, object]) -> str:
-    """Classify a reviewed AtomicLimits process without persisting notes.
-
-    AtomicLimits is itself an ALD process index.  Explicit plasma/MLD/hybrid
-    markers override the thermal default; notes are transient classification
-    input only and are never copied into evidence records.
-    """
-
-    reactant_text = _fold_text(
-        process.get("process_reactantA"),
-        process.get("process_reactantB"),
-        process.get("process_reactantC"),
-        process.get("process_reactantD"),
-        process.get("process_note"),
-    )
-    compact = " ".join(reactant_text.split())
-    if any(marker in compact for marker in ("ald/mld", "mld/ald", "ald mld", "mld ald", "hybrid molecular layer")):
-        return "hybrid"
-    if "molecular layer deposition" in compact or " mld " in f" {compact} ":
-        return "mld"
-    if any(marker in compact for marker in ("plasma", "peald", "radical")):
-        return "plasma-ald"
-    return "thermal-ald"
-
-
-def parse_atomiclimits_api_payload(payload: Mapping[str, object]) -> list[dict[str, object]]:
-    """Normalize the public live AtomicLimits process API into evidence records.
-
-    The endpoint returns process chemistry and linked references separately.
-    This join keeps only fixed target formulas, exact reactant source labels,
-    stable DOI references, review flags, and non-operational provenance.
-    """
-
-    if payload.get("success") is not True:
-        raise ValueError("AtomicLimits API payload is not successful")
-    raw_processes = payload.get("processes")
-    raw_references = payload.get("references")
-    if not isinstance(raw_processes, list) or not isinstance(raw_references, list):
-        raise ValueError("AtomicLimits API payload must contain process and reference arrays")
-
-    references_by_process: dict[str, list[dict[str, object]]] = {}
-    for raw_reference in raw_references:
-        if not isinstance(raw_reference, Mapping):
-            continue
-        process_id = str(raw_reference.get("process_id", "")).strip()
-        reference_id = str(raw_reference.get("reference_id", "")).strip()
-        doi_raw = str(raw_reference.get("reference_doi", "")).strip()
-        if not process_id or not doi_raw:
-            continue
-        try:
-            doi = evidence.normalize_doi(doi_raw)
-        except ValueError:
-            continue
-        reference: dict[str, object] = {
-            "type": "doi",
-            "identifier": doi,
-            "direct": True,
-            "reviewed": _flag(raw_reference.get("reference_reviewed")),
-        }
-        if reference_id:
-            reference["reference_id"] = reference_id
-        references_by_process.setdefault(process_id, []).append(reference)
-
-    records: list[dict[str, object]] = []
-    for raw_process in raw_processes:
-        if not isinstance(raw_process, Mapping):
-            continue
-        process_id = str(raw_process.get("process_id", "")).strip()
-        target_formula = str(raw_process.get("process_material", "")).strip()
-        if not process_id or not target_formula:
-            continue
-        try:
-            target_reduced, target_elements = materials.reduce_formula(target_formula)
-        except ValueError:
-            continue
-        if len(target_elements) < 2:
-            continue
-
-        reactants: list[dict[str, str]] = []
-        for suffix, role in (("A", "reactant-a"), ("B", "reactant-b"), ("C", "reactant-c"), ("D", "reactant-d")):
-            label = str(raw_process.get(f"process_reactant{suffix}", "")).strip()
-            if label:
-                reactants.append({"label": label, "role": role})
-        if not reactants:
-            continue
-
-        source_references = references_by_process.get(process_id, [])
-        publications_by_doi: dict[str, dict[str, object]] = {}
-        reference_ids: set[str] = set()
-        any_reference_reviewed = False
-        for source_reference in source_references:
-            doi = str(source_reference["identifier"])
-            publications_by_doi[doi] = {
-                "type": "doi",
-                "identifier": doi,
-                "direct": True,
-            }
-            any_reference_reviewed = any_reference_reviewed or source_reference.get("reviewed") is True
-            reference_id = source_reference.get("reference_id")
-            if isinstance(reference_id, str) and reference_id:
-                reference_ids.add(reference_id)
-        if not publications_by_doi:
-            continue
-
-        process_reviewed = _flag(raw_process.get("process_reviewed"))
-        raw_record: dict[str, object] = {
-            "target_material": target_formula,
-            "target_formula": target_formula,
-            "process_family": _atomiclimits_live_family(raw_process),
-            "reactants": reactants,
-            "publications": [publications_by_doi[key] for key in sorted(publications_by_doi)],
-            "discovery_sources": ["atomiclimits"],
-            "evidence_grade": "R3" if process_reviewed and any_reference_reviewed else "R2",
-            "selection_status": "candidate",
-            "provenance": {
-                "primary_process_index": "atomiclimits",
-                "atomiclimits_database_doi": ATOMICLIMITS_DATABASE_DOI,
-                "transport": "atomiclimits-live-api",
-                "process_id": process_id,
-                "process_reviewed": process_reviewed,
-                "reference_ids": sorted(reference_ids),
-                "reviewed_reference_present": any_reference_reviewed,
-            },
-        }
-        normalized = evidence.validate_evidence_record(raw_record)
-        if normalized["target_reduced_formula"] != target_reduced:
-            raise ValueError("target formula normalization mismatch")
-        records.append(normalized)
-
-    records.sort(
-        key=lambda item: (
-            str(item["target_reduced_formula"]),
-            str(item["evidence_id"]),
-        )
-    )
-    return records
-'''
+          addition = base64.b64decode("CmRlZiBfYXRvbWljbGltaXRzX2xpdmVfZmFtaWx5KHByb2Nlc3M6IE1hcHBpbmdbc3RyLCBvYmplY3RdKSAtPiBzdHI6CiAgICAiIiJDbGFzc2lmeSBhIHJldmlld2VkIEF0b21pY0xpbWl0cyBwcm9jZXNzIHdpdGhvdXQgcGVyc2lzdGluZyBub3Rlcy4KCiAgICBBdG9taWNMaW1pdHMgaXMgaXRzZWxmIGFuIEFMRCBwcm9jZXNzIGluZGV4LiBFeHBsaWNpdCBwbGFzbWEvTUxEL2h5YnJpZAogICAgbWFya2VycyBvdmVycmlkZSB0aGUgdGhlcm1hbCBkZWZhdWx0OyBub3RlcyBhcmUgdHJhbnNpZW50IGNsYXNzaWZpY2F0aW9uCiAgICBpbnB1dCBvbmx5IGFuZCBhcmUgbmV2ZXIgY29waWVkIGludG8gZXZpZGVuY2UgcmVjb3Jkcy4KICAgICIiIgoKICAgIHJlYWN0YW50X3RleHQgPSBfZm9sZF90ZXh0KAogICAgICAgIHByb2Nlc3MuZ2V0KCJwcm9jZXNzX3JlYWN0YW50QSIpLAogICAgICAgIHByb2Nlc3MuZ2V0KCJwcm9jZXNzX3JlYWN0YW50QiIpLAogICAgICAgIHByb2Nlc3MuZ2V0KCJwcm9jZXNzX3JlYWN0YW50QyIpLAogICAgICAgIHByb2Nlc3MuZ2V0KCJwcm9jZXNzX3JlYWN0YW50RCIpLAogICAgICAgIHByb2Nlc3MuZ2V0KCJwcm9jZXNzX25vdGUiKSwKICAgICkKICAgIGNvbXBhY3QgPSAiICIuam9pbihyZWFjdGFudF90ZXh0LnNwbGl0KCkpCiAgICBpZiBhbnkoCiAgICAgICAgbWFya2VyIGluIGNvbXBhY3QKICAgICAgICBmb3IgbWFya2VyIGluICgKICAgICAgICAgICAgImFsZC9tbGQiLAogICAgICAgICAgICAibWxkL2FsZCIsCiAgICAgICAgICAgICJhbGQgbWxkIiwKICAgICAgICAgICAgIm1sZCBhbGQiLAogICAgICAgICAgICAiaHlicmlkIG1vbGVjdWxhciBsYXllciIsCiAgICAgICAgKQogICAgKToKICAgICAgICByZXR1cm4gImh5YnJpZCIKICAgIGlmICJtb2xlY3VsYXIgbGF5ZXIgZGVwb3NpdGlvbiIgaW4gY29tcGFjdCBvciAiIG1sZCAiIGluIGYiIHtjb21wYWN0fSAiOgogICAgICAgIHJldHVybiAibWxkIgogICAgaWYgYW55KG1hcmtlciBpbiBjb21wYWN0IGZvciBtYXJrZXIgaW4gKCJwbGFzbWEiLCAicGVhbGQiLCAicmFkaWNhbCIpKToKICAgICAgICByZXR1cm4gInBsYXNtYS1hbGQiCiAgICByZXR1cm4gInRoZXJtYWwtYWxkIgoKCmRlZiBwYXJzZV9hdG9taWNsaW1pdHNfYXBpX3BheWxvYWQoCiAgICBwYXlsb2FkOiBNYXBwaW5nW3N0ciwgb2JqZWN0XSwKKSAtPiBsaXN0W2RpY3Rbc3RyLCBvYmplY3RdXToKICAgICIiIk5vcm1hbGl6ZSB0aGUgcHVibGljIGxpdmUgQXRvbWljTGltaXRzIHByb2Nlc3MgQVBJIGludG8gZXZpZGVuY2UgcmVjb3Jkcy4KCiAgICBUaGUgZW5kcG9pbnQgcmV0dXJucyBwcm9jZXNzIGNoZW1pc3RyeSBhbmQgbGlua2VkIHJlZmVyZW5jZXMgc2VwYXJhdGVseS4KICAgIFRoaXMgam9pbiBrZWVwcyBvbmx5IGZpeGVkIHRhcmdldCBmb3JtdWxhcywgZXhhY3QgcmVhY3RhbnQgc291cmNlIGxhYmVscywKICAgIHN0YWJsZSBET0kgcmVmZXJlbmNlcywgcmV2aWV3IGZsYWdzLCBhbmQgbm9uLW9wZXJhdGlvbmFsIHByb3ZlbmFuY2UuCiAgICAiIiIKCiAgICBpZiBwYXlsb2FkLmdldCgic3VjY2VzcyIpIGlzIG5vdCBUcnVlOgogICAgICAgIHJhaXNlIFZhbHVlRXJyb3IoIkF0b21pY0xpbWl0cyBBUEkgcGF5bG9hZCBpcyBub3Qgc3VjY2Vzc2Z1bCIpCiAgICByYXdfcHJvY2Vzc2VzID0gcGF5bG9hZC5nZXQoInByb2Nlc3NlcyIpCiAgICByYXdfcmVmZXJlbmNlcyA9IHBheWxvYWQuZ2V0KCJyZWZlcmVuY2VzIikKICAgIGlmIG5vdCBpc2luc3RhbmNlKHJhd19wcm9jZXNzZXMsIGxpc3QpIG9yIG5vdCBpc2luc3RhbmNlKHJhd19yZWZlcmVuY2VzLCBsaXN0KToKICAgICAgICByYWlzZSBWYWx1ZUVycm9yKAogICAgICAgICAgICAiQXRvbWljTGltaXRzIEFQSSBwYXlsb2FkIG11c3QgY29udGFpbiBwcm9jZXNzIGFuZCByZWZlcmVuY2UgYXJyYXlzIgogICAgICAgICkKCiAgICByZWZlcmVuY2VzX2J5X3Byb2Nlc3M6IGRpY3Rbc3RyLCBsaXN0W2RpY3Rbc3RyLCBvYmplY3RdXV0gPSB7fQogICAgZm9yIHJhd19yZWZlcmVuY2UgaW4gcmF3X3JlZmVyZW5jZXM6CiAgICAgICAgaWYgbm90IGlzaW5zdGFuY2UocmF3X3JlZmVyZW5jZSwgTWFwcGluZyk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgcHJvY2Vzc19pZCA9IHN0cihyYXdfcmVmZXJlbmNlLmdldCgicHJvY2Vzc19pZCIsICIiKSkuc3RyaXAoKQogICAgICAgIHJlZmVyZW5jZV9pZCA9IHN0cihyYXdfcmVmZXJlbmNlLmdldCgicmVmZXJlbmNlX2lkIiwgIiIpKS5zdHJpcCgpCiAgICAgICAgZG9pX3JhdyA9IHN0cihyYXdfcmVmZXJlbmNlLmdldCgicmVmZXJlbmNlX2RvaSIsICIiKSkuc3RyaXAoKQogICAgICAgIGlmIG5vdCBwcm9jZXNzX2lkIG9yIG5vdCBkb2lfcmF3OgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIHRyeToKICAgICAgICAgICAgZG9pID0gZXZpZGVuY2Uubm9ybWFsaXplX2RvaShkb2lfcmF3KQogICAgICAgIGV4Y2VwdCBWYWx1ZUVycm9yOgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIHJlZmVyZW5jZTogZGljdFtzdHIsIG9iamVjdF0gPSB7CiAgICAgICAgICAgICJ0eXBlIjogImRvaSIsCiAgICAgICAgICAgICJpZGVudGlmaWVyIjogZG9pLAogICAgICAgICAgICAiZGlyZWN0IjogVHJ1ZSwKICAgICAgICAgICAgInJldmlld2VkIjogX2ZsYWcocmF3X3JlZmVyZW5jZS5nZXQoInJlZmVyZW5jZV9yZXZpZXdlZCIpKSwKICAgICAgICB9CiAgICAgICAgaWYgcmVmZXJlbmNlX2lkOgogICAgICAgICAgICByZWZlcmVuY2VbInJlZmVyZW5jZV9pZCJdID0gcmVmZXJlbmNlX2lkCiAgICAgICAgcmVmZXJlbmNlc19ieV9wcm9jZXNzLnNldGRlZmF1bHQocHJvY2Vzc19pZCwgW10pLmFwcGVuZChyZWZlcmVuY2UpCgogICAgcmVjb3JkczogbGlzdFtkaWN0W3N0ciwgb2JqZWN0XV0gPSBbXQogICAgZm9yIHJhd19wcm9jZXNzIGluIHJhd19wcm9jZXNzZXM6CiAgICAgICAgaWYgbm90IGlzaW5zdGFuY2UocmF3X3Byb2Nlc3MsIE1hcHBpbmcpOgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIHByb2Nlc3NfaWQgPSBzdHIocmF3X3Byb2Nlc3MuZ2V0KCJwcm9jZXNzX2lkIiwgIiIpKS5zdHJpcCgpCiAgICAgICAgdGFyZ2V0X2Zvcm11bGEgPSBzdHIocmF3X3Byb2Nlc3MuZ2V0KCJwcm9jZXNzX21hdGVyaWFsIiwgIiIpKS5zdHJpcCgpCiAgICAgICAgaWYgbm90IHByb2Nlc3NfaWQgb3Igbm90IHRhcmdldF9mb3JtdWxhOgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIHRyeToKICAgICAgICAgICAgdGFyZ2V0X3JlZHVjZWQsIHRhcmdldF9lbGVtZW50cyA9IG1hdGVyaWFscy5yZWR1Y2VfZm9ybXVsYSh0YXJnZXRfZm9ybXVsYSkKICAgICAgICBleGNlcHQgVmFsdWVFcnJvcjoKICAgICAgICAgICAgY29udGludWUKICAgICAgICBpZiBsZW4odGFyZ2V0X2VsZW1lbnRzKSA8IDI6CiAgICAgICAgICAgIGNvbnRpbnVlCgogICAgICAgIHJlYWN0YW50czogbGlzdFtkaWN0W3N0ciwgc3RyXV0gPSBbXQogICAgICAgIGZvciBzdWZmaXgsIHJvbGUgaW4gKAogICAgICAgICAgICAoIkEiLCAicmVhY3RhbnQtYSIpLAogICAgICAgICAgICAoIkIiLCAicmVhY3RhbnQtYiIpLAogICAgICAgICAgICAoIkMiLCAicmVhY3RhbnQtYyIpLAogICAgICAgICAgICAoIkQiLCAicmVhY3RhbnQtZCIpLAogICAgICAgICk6CiAgICAgICAgICAgIGxhYmVsID0gc3RyKHJhd19wcm9jZXNzLmdldChmInByb2Nlc3NfcmVhY3RhbnR7c3VmZml4fSIsICIiKSkuc3RyaXAoKQogICAgICAgICAgICBpZiBsYWJlbDoKICAgICAgICAgICAgICAgIHJlYWN0YW50cy5hcHBlbmQoeyJsYWJlbCI6IGxhYmVsLCAicm9sZSI6IHJvbGV9KQogICAgICAgIGlmIG5vdCByZWFjdGFudHM6CiAgICAgICAgICAgIGNvbnRpbnVlCgogICAgICAgIHNvdXJjZV9yZWZlcmVuY2VzID0gcmVmZXJlbmNlc19ieV9wcm9jZXNzLmdldChwcm9jZXNzX2lkLCBbXSkKICAgICAgICBwdWJsaWNhdGlvbnNfYnlfZG9pOiBkaWN0W3N0ciwgZGljdFtzdHIsIG9iamVjdF1dID0ge30KICAgICAgICByZWZlcmVuY2VfaWRzOiBzZXRbc3RyXSA9IHNldCgpCiAgICAgICAgYW55X3JlZmVyZW5jZV9yZXZpZXdlZCA9IEZhbHNlCiAgICAgICAgZm9yIHNvdXJjZV9yZWZlcmVuY2UgaW4gc291cmNlX3JlZmVyZW5jZXM6CiAgICAgICAgICAgIGRvaSA9IHN0cihzb3VyY2VfcmVmZXJlbmNlWyJpZGVudGlmaWVyIl0pCiAgICAgICAgICAgIHB1YmxpY2F0aW9uc19ieV9kb2lbZG9pXSA9IHsKICAgICAgICAgICAgICAgICJ0eXBlIjogImRvaSIsCiAgICAgICAgICAgICAgICAiaWRlbnRpZmllciI6IGRvaSwKICAgICAgICAgICAgICAgICJkaXJlY3QiOiBUcnVlLAogICAgICAgICAgICB9CiAgICAgICAgICAgIGFueV9yZWZlcmVuY2VfcmV2aWV3ZWQgPSAoCiAgICAgICAgICAgICAgICBhbnlfcmVmZXJlbmNlX3Jldmlld2VkCiAgICAgICAgICAgICAgICBvciBzb3VyY2VfcmVmZXJlbmNlLmdldCgicmV2aWV3ZWQiKSBpcyBUcnVlCiAgICAgICAgICAgICkKICAgICAgICAgICAgcmVmZXJlbmNlX2lkID0gc291cmNlX3JlZmVyZW5jZS5nZXQoInJlZmVyZW5jZV9pZCIpCiAgICAgICAgICAgIGlmIGlzaW5zdGFuY2UocmVmZXJlbmNlX2lkLCBzdHIpIGFuZCByZWZlcmVuY2VfaWQ6CiAgICAgICAgICAgICAgICByZWZlcmVuY2VfaWRzLmFkZChyZWZlcmVuY2VfaWQpCiAgICAgICAgaWYgbm90IHB1YmxpY2F0aW9uc19ieV9kb2k6CiAgICAgICAgICAgIGNvbnRpbnVlCgogICAgICAgIHByb2Nlc3NfcmV2aWV3ZWQgPSBfZmxhZyhyYXdfcHJvY2Vzcy5nZXQoInByb2Nlc3NfcmV2aWV3ZWQiKSkKICAgICAgICByYXdfcmVjb3JkOiBkaWN0W3N0ciwgb2JqZWN0XSA9IHsKICAgICAgICAgICAgInRhcmdldF9tYXRlcmlhbCI6IHRhcmdldF9mb3JtdWxhLAogICAgICAgICAgICAidGFyZ2V0X2Zvcm11bGEiOiB0YXJnZXRfZm9ybXVsYSwKICAgICAgICAgICAgInByb2Nlc3NfZmFtaWx5IjogX2F0b21pY2xpbWl0c19saXZlX2ZhbWlseShyYXdfcHJvY2VzcyksCiAgICAgICAgICAgICJyZWFjdGFudHMiOiByZWFjdGFudHMsCiAgICAgICAgICAgICJwdWJsaWNhdGlvbnMiOiBbCiAgICAgICAgICAgICAgICBwdWJsaWNhdGlvbnNfYnlfZG9pW2tleV0gZm9yIGtleSBpbiBzb3J0ZWQocHVibGljYXRpb25zX2J5X2RvaSkKICAgICAgICAgICAgXSwKICAgICAgICAgICAgImRpc2NvdmVyeV9zb3VyY2VzIjogWyJhdG9taWNsaW1pdHMiXSwKICAgICAgICAgICAgImV2aWRlbmNlX2dyYWRlIjogKAogICAgICAgICAgICAgICAgIlIzIiBpZiBwcm9jZXNzX3Jldmlld2VkIGFuZCBhbnlfcmVmZXJlbmNlX3Jldmlld2VkIGVsc2UgIlIyIgogICAgICAgICAgICApLAogICAgICAgICAgICAic2VsZWN0aW9uX3N0YXR1cyI6ICJjYW5kaWRhdGUiLAogICAgICAgICAgICAicHJvdmVuYW5jZSI6IHsKICAgICAgICAgICAgICAgICJwcmltYXJ5X3Byb2Nlc3NfaW5kZXgiOiAiYXRvbWljbGltaXRzIiwKICAgICAgICAgICAgICAgICJhdG9taWNsaW1pdHNfZGF0YWJhc2VfZG9pIjogQVRPTUlDTElNSVRTX0RBVEFCQVNFX0RPSSwKICAgICAgICAgICAgICAgICJ0cmFuc3BvcnQiOiAiYXRvbWljbGltaXRzLWxpdmUtYXBpIiwKICAgICAgICAgICAgICAgICJwcm9jZXNzX2lkIjogcHJvY2Vzc19pZCwKICAgICAgICAgICAgICAgICJwcm9jZXNzX3Jldmlld2VkIjogcHJvY2Vzc19yZXZpZXdlZCwKICAgICAgICAgICAgICAgICJyZWZlcmVuY2VfaWRzIjogc29ydGVkKHJlZmVyZW5jZV9pZHMpLAogICAgICAgICAgICAgICAgInJldmlld2VkX3JlZmVyZW5jZV9wcmVzZW50IjogYW55X3JlZmVyZW5jZV9yZXZpZXdlZCwKICAgICAgICAgICAgfSwKICAgICAgICB9CiAgICAgICAgbm9ybWFsaXplZCA9IGV2aWRlbmNlLnZhbGlkYXRlX2V2aWRlbmNlX3JlY29yZChyYXdfcmVjb3JkKQogICAgICAgIGlmIG5vcm1hbGl6ZWRbInRhcmdldF9yZWR1Y2VkX2Zvcm11bGEiXSAhPSB0YXJnZXRfcmVkdWNlZDoKICAgICAgICAgICAgcmFpc2UgVmFsdWVFcnJvcigidGFyZ2V0IGZvcm11bGEgbm9ybWFsaXphdGlvbiBtaXNtYXRjaCIpCiAgICAgICAgcmVjb3Jkcy5hcHBlbmQobm9ybWFsaXplZCkKCiAgICByZWNvcmRzLnNvcnQoCiAgICAgICAga2V5PWxhbWJkYSBpdGVtOiAoCiAgICAgICAgICAgIHN0cihpdGVtWyJ0YXJnZXRfcmVkdWNlZF9mb3JtdWxhIl0pLAogICAgICAgICAgICBzdHIoaXRlbVsiZXZpZGVuY2VfaWQiXSksCiAgICAgICAgKQogICAgKQogICAgcmV0dXJuIHJlY29yZHMKCg==").decode("utf-8")
           path.write_text(text.replace(marker, addition + marker, 1), encoding="utf-8")
           PY
           git config user.name "github-actions[bot]"
