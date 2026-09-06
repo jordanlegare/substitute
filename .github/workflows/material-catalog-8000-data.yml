@@ -21,14 +21,13 @@ jobs:
           python-version: '3.12'
       - name: Install audit dependencies
         run: python -m pip install -e '.[test]' 'duckdb>=1.1,<2'
-      - name: Acquire complete eligible COD candidate pool
+      - name: Acquire complete fixed inorganic COD candidate pool
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           import duckdb
           import ald_materials as materials
-          from tools import build_material_catalog as builder
 
           url = 'https://huggingface.co/datasets/LMucko/crystallography-open-database/resolve/main/cod_full.parquet'
           con = duckdb.connect()
@@ -55,8 +54,6 @@ jobs:
               except ValueError:
                   continue
               if len(elements) < 2 or ('C' in elements and 'H' in elements):
-                  continue
-              if not builder.classify_material(elements, reduced, {}):
                   continue
               group = by_formula.setdefault(reduced, [])
               if len(group) >= 2:
@@ -93,6 +90,7 @@ jobs:
                       'full_rows_scanned': len(rows),
                       'eligible_unique_formulas': len(by_formula),
                       'retained_unique_formula_pool': len(by_formula),
+                      'candidate_policy': 'parseable fixed formula, at least two elements, excludes formulas containing both C and H',
                   },
               },
           }))
@@ -115,7 +113,7 @@ jobs:
       - name: Verify canonical 8000 milestone
         run: |
           python tools/build_material_catalog.py --check --target-count 8000
-          python -m pytest -q tests/test_pubchem_rdf_audit.py tests/test_material_catalog_pubchem.py tests/test_material_catalog_8000.py
+          python -m pytest -q tests/test_material_catalog_ranking.py tests/test_pubchem_rdf_audit.py tests/test_material_catalog_pubchem.py tests/test_material_catalog_8000.py tests/test_material_catalog_real.py
       - name: Print audit summary
         run: |
           python - <<'PY'
