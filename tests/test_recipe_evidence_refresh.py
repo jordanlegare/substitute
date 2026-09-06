@@ -2,7 +2,9 @@ import io
 import json
 from pathlib import Path
 
+import ald_recipe_evidence as evidence_core
 from tools.refresh_recipe_evidence import (
+    build_frozen_evidence,
     cached_fetch_json,
     classify_process_family,
     normalize_crossref_work,
@@ -12,6 +14,36 @@ from tools.refresh_recipe_evidence import (
 
 
 FIXTURES = Path("tests/fixtures/recipe_evidence")
+
+
+def _candidate(target_formula, doi, *, grade="R2", family="thermal-ald", reactants=None):
+    return evidence_core.validate_evidence_record(
+        {
+            "target_material": target_formula,
+            "target_formula": target_formula,
+            "process_family": family,
+            "reactants": reactants
+            or [
+                {"label": "A-source", "role": "reactant-a"},
+                {"label": "B-source", "role": "reactant-b"},
+            ],
+            "publications": [{"type": "doi", "identifier": doi, "direct": True}],
+            "discovery_sources": ["atomiclimits"],
+            "evidence_grade": grade,
+            "selection_status": "candidate",
+        }
+    )
+
+
+def _material_entry(formula):
+    reduced, elements = evidence_core.materials.reduce_formula(formula)
+    return {
+        "material_id": evidence_core.materials.material_id(reduced),
+        "name": formula,
+        "formula": formula,
+        "reduced_formula": reduced,
+        "elements": list(elements),
+    }
 
 
 def test_classify_process_family_is_conservative_and_deterministic():
@@ -87,3 +119,71 @@ def test_cached_fetch_json_replays_without_network(tmp_path):
         raise AssertionError(f"network should not be used for cached URL: {url}")
 
     assert cached_fetch_json("https://example.test/work", tmp_path, fail_fetch) == {"answer": 42}
+
+
+def test_build_frozen_evidence_preserves_existing_and_selects_one_best_new_target():
+    records = [
+        _candidate("HfO2", "10.1234/hfo2", grade="R3"),
+        _candidate("ZnO", "10.1234/zno-r2", grade="R2"),
+        _candidate("ZnO", "10.1234/zno-r3", grade="R3"),
+    ]
+    material_catalog = {
+        "entries": [_material_entry("HfO2"), _material_entry("ZnO")]
+    }
+    recipe_catalog = {
+        "entries": [
+            {
+                "recipe_id": "historical-hfo2",
+                "target_formula": "HfO2",
+                "path": "recipes/compounds/oxides/historical_hfo2.json",
+            }
+        ]
+    }
+
+    evidence_doc, manifest, audit = build_frozen_evidence(
+        records,
+        material_catalog,
+        recipe_catalog,
+        source_metadata={
+            "awases_repository": "jd-coderepos/awases-ald",
+            "awases_ref": "abc123",
+            "awases_path": "step 1/data/2-filtered-data.csv",
+        },
+    )
+
+    statuses = {
+        (record["target_reduced_formula"], record["selection_status"], record["evidence_grade"])
+        for record in evidence_doc["records"]
+    }
+    assert ("HfO2", "covered-existing", "R3") in statuses
+    assert ("OZn", "selected", "R3") in statuses
+    assert ("OZn", "rejected", "R2") in statuses
+    selected = [record for record in evidence_doc["records"] if record["selection_status"] == "selected"]
+    assert selected[0]["material_id"] == _material_entry("ZnO")["material_id"]
+    assert manifest["schema"] == "ald-recipe-evidence-manifest/1"
+    assert manifest["sources"]["atomiclimits"]["awases_ref"] == "abc123"
+    assert len(manifest["digests"]["process_evidence_sha256"]) == 64
+    assert audit["counts"]["material_identities_examined"] == 2
+    assert audit["counts"]["existing_recipe_backed_materials"] == 1
+    assert audit["counts"]["new_distinct_materials_selected"] == 1
+    assert audit["counts"]["r3_selected"] == 1
+    assert audit["counts"]["r2_selected"] == 0
+    assert audit["counts"]["final_executable_recipe_count"] == 2
+    assert audit["counts"]["remaining_identity_only_materials"] == 0
+    assert audit["rejections"]["already-recipe-backed"] == 1
+    assert audit["rejections"]["not-best-chemistry"] == 1
+
+
+def test_build_frozen_evidence_excludes_candidates_outside_material_universe():
+    records = [
+        _candidate("ZnO", "10.1234/zno", grade="R3"),
+        _candidate("CdO", "10.1234/cdo", grade="R3"),
+    ]
+    evidence_doc, _manifest, audit = build_frozen_evidence(
+        records,
+        {"entries": [_material_entry("ZnO")]},
+        {"entries": []},
+        source_metadata={"awases_ref": "abc123"},
+    )
+    assert {record["target_reduced_formula"] for record in evidence_doc["records"]} == {"OZn"}
+    assert audit["counts"]["source_candidates_outside_material_catalog"] == 1
