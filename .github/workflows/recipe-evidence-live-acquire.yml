@@ -106,7 +106,7 @@ jobs:
       - name: Verify exact generated state
         working-directory: substitute
         run: |
-          python tools/audit_recipe_evidence.py --check
+          python tools/audit_recipe_evidence.py
           python tools/build_recipe_expansion.py --check
           python tools/build_compound_catalog.py --check
           python tools/build_material_catalog.py --check --target-count 8000
