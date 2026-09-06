@@ -1,0 +1,107 @@
+name: AtomicLimits evidence loss audit
+
+on:
+  push:
+    branches:
+      - feature/recipe-evidence-expansion
+    paths:
+      - .github/workflows/atomiclimits-loss-audit.yml
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/recipe-evidence-expansion
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Audit live process/reference losses
+        run: |
+          python - <<'PY'
+          from collections import Counter, defaultdict
+          from urllib.request import Request, urlopen
+          import json
+          import ald_materials as materials
+
+          url='https://www.atomiclimits.com/alddatabase/api/processes.php'
+          req=Request(url,headers={'User-Agent':'substitute-recipe-evidence/1','Accept':'application/json'})
+          payload=json.loads(urlopen(req,timeout=60).read().decode('utf-8-sig'))
+          processes=payload.get('processes',[])
+          refs=payload.get('references',[])
+          print('TOP_KEYS',sorted(payload))
+          print('PROCESS_COUNT',len(processes),'REFERENCE_COUNT',len(refs))
+          print('PROCESS_KEYS',sorted(set().union(*(set(x) for x in processes if isinstance(x,dict)))))
+          print('REFERENCE_KEYS',sorted(set().union(*(set(x) for x in refs if isinstance(x,dict)))))
+
+          refs_by_process=defaultdict(list)
+          for r in refs:
+              if isinstance(r,dict): refs_by_process[str(r.get('process_id','')).strip()].append(r)
+
+          material_catalog=json.loads(open('materials/catalog.json',encoding='utf-8').read())
+          material_formulas=set()
+          for entry in material_catalog['entries']:
+              raw=entry.get('reduced_formula',entry.get('formula'))
+              try: reduced,elements=materials.reduce_formula(raw)
+              except Exception: continue
+              if len(elements)>=2: material_formulas.add(reduced)
+
+          reasons=Counter(); targets=defaultdict(set); candidate_processes=[]
+          for p in processes:
+              if not isinstance(p,dict):
+                  reasons['not_object']+=1; continue
+              pid=str(p.get('process_id','')).strip()
+              raw_formula=str(p.get('process_material','')).strip()
+              if not pid or not raw_formula:
+                  reasons['missing_id_or_target']+=1; continue
+              try: reduced,elements=materials.reduce_formula(raw_formula)
+              except Exception:
+                  reasons['invalid_target_formula']+=1; continue
+              if len(elements)<2:
+                  reasons['elemental_target']+=1; continue
+              reactants=[str(p.get(f'process_reactant{s}','')).strip() for s in 'ABCD']
+              reactants=[x for x in reactants if x]
+              if not reactants:
+                  reasons['missing_reactants']+=1; continue
+              linked=refs_by_process.get(pid,[])
+              dois=[str(r.get('reference_doi','')).strip() for r in linked if str(r.get('reference_doi','')).strip()]
+              if not linked:
+                  reasons['no_linked_reference']+=1
+              elif not dois:
+                  reasons['linked_reference_without_doi']+=1
+              else:
+                  reasons['doi_eligible']+=1
+              if reduced in material_formulas:
+                  targets['all_structured_catalog_targets'].add(reduced)
+                  if dois: targets['doi_eligible_catalog_targets'].add(reduced)
+                  elif linked: targets['non_doi_reference_catalog_targets'].add(reduced)
+                  else: targets['no_reference_catalog_targets'].add(reduced)
+                  candidate_processes.append((reduced,pid,len(linked),len(dois)))
+              else:
+                  reasons['outside_material_catalog']+=1
+
+          print('REASONS',json.dumps(dict(sorted(reasons.items())),sort_keys=True))
+          for key in sorted(targets): print(key.upper(),len(targets[key]))
+          extra_non_doi=targets['non_doi_reference_catalog_targets']-targets['doi_eligible_catalog_targets']
+          extra_no_ref=targets['no_reference_catalog_targets']-targets['doi_eligible_catalog_targets']
+          print('EXTRA_NON_DOI_DISTINCT_TARGETS',len(extra_non_doi))
+          print('EXTRA_NO_REF_DISTINCT_TARGETS',len(extra_no_ref))
+          print('EXTRA_NON_DOI_TARGET_SAMPLE',sorted(extra_non_doi)[:50])
+
+          non_doi_refs=[r for r in refs if isinstance(r,dict) and not str(r.get('reference_doi','')).strip()]
+          print('NON_DOI_REFERENCE_COUNT',len(non_doi_refs))
+          for r in non_doi_refs[:8]:
+              safe={k:r.get(k) for k in sorted(r) if k not in {'reference_abstract','reference_fulltext','full_text','abstract'}}
+              print('NON_DOI_REF_SAMPLE',json.dumps(safe,sort_keys=True,ensure_ascii=False)[:2500])
+          PY
+      - name: Remove diagnostic workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/atomiclimits-loss-audit.yml
+          git commit -m "chore: complete AtomicLimits evidence loss audit"
+          git push origin HEAD:feature/recipe-evidence-expansion
