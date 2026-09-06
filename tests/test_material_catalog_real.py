@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+import ald_materials as materials
+
+
+CATALOG = Path("materials/catalog.json")
+AUDIT = Path("materials/build-audit.json")
+MANIFEST = Path("materials/source-manifest.json")
+COD_SOURCE = Path("materials/sources/cod-materials.json")
+PUBCHEM_SOURCE = Path("materials/sources/pubchem-identities.json")
+
+FORBIDDEN_KEYS = {
+    "temperature",
+    "process_temperature",
+    "pulse_time",
+    "dose_time",
+    "flow",
+    "flow_rate",
+    "pressure",
+    "equipment",
+    "equipment_settings",
+    "precursor_handling",
+    "fabrication_mapping",
+    "physical_fabrication_mapping",
+}
+
+
+def _walk_keys(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield str(key)
+            yield from _walk_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_keys(child)
+
+
+def test_checked_in_material_catalog_has_exactly_8000_real_counted_formulas():
+    entries = materials.load_material_catalog(CATALOG)
+    counted = [entry for entry in entries if entry.get("counted") is True]
+
+    assert len(counted) == 8000
+    assert len({entry["reduced_formula"] for entry in counted}) == 8000
+    assert len({entry["material_id"] for entry in counted}) == 8000
+    assert all(len(entry["elements"]) >= 2 for entry in counted)
+    assert all(entry["provenance"] for entry in counted)
+    assert all(entry.get("identifiers", {}).get("pubchem_cid") for entry in counted)
+    assert all(entry.get("pubchem_audit", {}).get("status") == "matched" for entry in counted)
+    assert all(materials.reduce_formula(entry["formula"])[0] == entry["reduced_formula"] for entry in counted)
+
+    provenance_sources = {
+        item["source"]
+        for entry in counted
+        for item in entry["provenance"]
+    }
+    assert provenance_sources <= {"cod", "pubchem"}
+    assert "cod" in provenance_sources
+    assert "pubchem" in provenance_sources
+    assert all(
+        entry.get("identifiers", {}).get("cod_ids")
+        or any(item.get("source") == "pubchem" for item in entry["provenance"])
+        for entry in counted
+    )
+
+
+def test_checked_in_catalog_contains_common_thin_film_reference_materials():
+    entries = materials.load_material_catalog(CATALOG)
+    formulas = {entry["reduced_formula"] for entry in entries if entry.get("counted") is True}
+    expected = {
+        "HfO2",
+        "Al2O3",
+        "O2Ti",
+        "O2Si",
+        "OZn",
+        "GaN",
+        "AlN",
+        "NTi",
+        "MoS2",
+        "S2W",
+    }
+    assert expected <= formulas
+
+
+def test_material_catalog_contains_no_operational_process_metadata():
+    payload = json.loads(CATALOG.read_text(encoding="utf-8"))
+    keys = {key.casefold() for key in _walk_keys(payload)}
+    assert FORBIDDEN_KEYS.isdisjoint(keys)
+
+
+def test_material_catalog_artifacts_rebuild_byte_identically():
+    result = subprocess.run(
+        [sys.executable, "tools/build_material_catalog.py", "--check", "--target-count", "8000"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_material_catalog_audit_and_manifest_match_milestone():
+    audit = json.loads(AUDIT.read_text(encoding="utf-8"))
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+
+    assert audit["counted_catalog_size"] == 8000
+    assert len(audit["final_material_ids"]) == 8000
+    assert audit["accepted_candidate_count_before_selection"] >= 8000
+    assert audit["recipe_linked_materials"] > 0
+    assert audit["target_count"] == 8000
+    assert audit["selected_count"] == 8000
+    assert audit["pubchem_matched_count"] == 8000
+    assert audit["pubchem_candidate_match_count"] >= 8000
+    assert audit["cod_backed_selected_count"] > 0
+    assert audit["pubchem_primary_selected_count"] > 0
+    assert audit["cod_backed_selected_count"] + audit["pubchem_primary_selected_count"] == 8000
+    assert manifest["target_count"] == 8000
+    assert manifest["selection_policy_version"] == "materials-8000-pubchem-rdf-v2"
+    assert manifest["source_metadata"]["pubchem"]["audit_mode"] == "bulk-mirror"
+    assert manifest["source_metadata"]["pubchem"]["selection_mode"] == "cod-plus-pubchem-primary"
+    assert COD_SOURCE.exists()
+    assert PUBCHEM_SOURCE.exists()

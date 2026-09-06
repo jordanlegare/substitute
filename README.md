@@ -30,8 +30,32 @@ For a fixed canonical recipe, controller implementation, and random seed, verifi
 | Verify product MP4 and then simulate | `ald-media-controller simulate-product ...` |
 | Audit precursor/material compatibility evidence | `ald-master compatibility-report` |
 | Rank evidence-supported 2–6 precursor candidates | `ald-master candidates ...` |
+| Browse the 8,000-material identity catalog | `ald-master materials search ...` |
 
 The product-MP4 path **adds** a product visualization mode; it does not replace the existing QR/HLS mode.
+
+## 8,000-material identity catalog
+
+`materials/catalog.json` is a separate, offline identity catalog containing exactly **8,000 unique non-elemental fixed-stoichiometry reduced formulas** for the current milestone. Every counted entry has an exact formula/CID match in the full PubChemRDF molecular-formula mirror release dated 2026-07-25. Of the selected identities, **7,122 are also COD-backed** and **878 are explicitly PubChem-primary supplements**. PubChem-primary status is identity evidence only; it does not create process or compatibility evidence.
+
+This catalog is **not** 8,000 executable ALD/MLD recipes. `recipes/compounds/catalog.json` remains the executable simulation-recipe index. A material without a linked recipe is identity-only, and its absence from the compatibility evidence graph remains `UNKNOWN`, not incompatible.
+
+Common discovery commands:
+
+```bash
+ald-master materials search HfO2
+ald-master materials show HfO2
+ald-master materials list --class oxide --element Hf --limit 50
+ald-master materials report
+```
+
+The material catalog rebuilds deterministically from committed frozen source metadata:
+
+```bash
+python tools/build_material_catalog.py --check --target-count 8000
+```
+
+See [`docs/material-catalog.md`](docs/material-catalog.md) for provenance, counting rules, offline rebuilds, CLI details, and the identity/process-evidence boundary.
 
 ## Compatibility evidence engine
 
