@@ -30,6 +30,28 @@ BUILDER_SCHEMA = "ald-material-builder/1"
 MANIFEST_SCHEMA = "ald-material-source-manifest/1"
 AUDIT_SCHEMA = "ald-material-build-audit/1"
 
+_METALLIC_ELEMENTS = {
+    "Ac", "Ag", "Al", "Am", "Au", "Ba", "Be", "Bi", "Bk", "Ca", "Cd",
+    "Ce", "Cf", "Cm", "Co", "Cr", "Cs", "Cu", "Dy", "Er", "Es", "Eu",
+    "Fe", "Fm", "Fr", "Ga", "Gd", "Hf", "Hg", "Ho", "In", "Ir", "K",
+    "La", "Li", "Lr", "Lu", "Md", "Mg", "Mn", "Mo", "Na", "Nb", "Nd",
+    "Ni", "No", "Np", "Os", "Pa", "Pb", "Pd", "Pm", "Pr", "Pt", "Pu",
+    "Ra", "Rb", "Re", "Rh", "Ru", "Sc", "Sm", "Sn", "Sr", "Ta", "Tb",
+    "Tc", "Th", "Ti", "Tl", "Tm", "U", "V", "W", "Y", "Yb", "Zn", "Zr",
+}
+_CORE_THIN_FILM_CLASSES = {
+    "oxide",
+    "nitride",
+    "sulfide",
+    "selenide",
+    "telluride",
+    "boride",
+    "silicide",
+    "phosphide",
+    "arsenide",
+}
+_SECONDARY_MATERIAL_CLASSES = {"fluoride", "halide", "intermetallic"}
+
 
 def _digest(value: object) -> str:
     return hashlib.sha256(materials.canonical_json_bytes(value)).hexdigest()
@@ -47,15 +69,17 @@ def classify_material(
     del reduced_formula
     present = set(elements)
     classes: set[str] = set()
-    if "O" in present:
+    has_oxygen = "O" in present
+
+    if has_oxygen:
         classes.add("oxide")
-    if "N" in present and "O" not in present:
+    if "N" in present and not has_oxygen:
         classes.add("nitride")
-    if "S" in present:
+    if "S" in present and not has_oxygen:
         classes.add("sulfide")
-    if "Se" in present:
+    if "Se" in present and not has_oxygen:
         classes.add("selenide")
-    if "Te" in present:
+    if "Te" in present and not has_oxygen:
         classes.add("telluride")
     if "F" in present:
         classes.add("fluoride")
@@ -63,27 +87,58 @@ def classify_material(
         classes.add("halide")
     if "C" in present and not bool(metadata.get("organic")):
         classes.add("carbide-or-inorganic-carbon")
-    if "B" in present:
+    if "B" in present and not has_oxygen:
         classes.add("boride")
     if "Si" in present and len(present) >= 2:
-        classes.add("silicide-or-silicate")
+        classes.add("silicate" if has_oxygen else "silicide")
     if "P" in present:
-        classes.add("phosphide-or-phosphate")
-    if "As" in present:
+        classes.add("phosphate" if has_oxygen else "phosphide")
+    if "As" in present and not has_oxygen:
         classes.add("arsenide")
+    if len(present) >= 2 and present.issubset(_METALLIC_ELEMENTS):
+        classes.add("intermetallic")
+
     explicit = metadata.get("material_classes", [])
     if isinstance(explicit, Sequence) and not isinstance(explicit, (str, bytes)):
         classes.update(str(value).strip() for value in explicit if str(value).strip())
     return sorted(classes)
 
 
-def relevance_score(record: Mapping[str, Any]) -> tuple[int, int, int, str, str]:
+def _formula_complexity(reduced_formula: str) -> tuple[int, int]:
+    try:
+        counts = materials.parse_formula(reduced_formula)
+    except ValueError:
+        return (10_000, 10_000)
+    return (len(counts), sum(counts.values()))
+
+
+def relevance_score(record: Mapping[str, Any]) -> tuple[Any, ...]:
     provenance = record.get("provenance", [])
     phases = record.get("phases", [])
     identifiers = record.get("identifiers", {})
-    pubchem = int(isinstance(identifiers, Mapping) and bool(identifiers.get("pubchem_cid")))
+    pubchem = int(
+        isinstance(identifiers, Mapping) and bool(identifiers.get("pubchem_cid"))
+    )
+    process = record.get("process_evidence", {})
+    recipe_backed = int(
+        isinstance(process, Mapping) and process.get("status") == "executable-recipe"
+    )
+    classes = set(str(value) for value in record.get("material_classes", []))
+    if classes.intersection(_CORE_THIN_FILM_CLASSES):
+        class_priority = 0
+    elif classes.intersection(_SECONDARY_MATERIAL_CLASSES):
+        class_priority = 1
+    else:
+        class_priority = 2
+    element_count, atom_count = _formula_complexity(
+        str(record.get("reduced_formula", ""))
+    )
     return (
-        -len(record.get("material_classes", [])),
+        -recipe_backed,
+        class_priority,
+        element_count,
+        atom_count,
+        -pubchem,
         -len(provenance) if isinstance(provenance, Sequence) else 0,
         -len(phases) if isinstance(phases, Sequence) else 0,
         str(record.get("reduced_formula", "")),
@@ -116,6 +171,26 @@ def _pubchem_index(records: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[st
         if reduced and reduced not in result:
             result[reduced] = record
     return result
+
+
+def _recipe_index(
+    recipe_entries: Sequence[Mapping[str, Any]],
+) -> dict[str, list[dict[str, str]]]:
+    index: dict[str, list[dict[str, str]]] = {}
+    for entry in recipe_entries:
+        formula = entry.get("target_formula")
+        recipe_id = str(entry.get("recipe_id", "")).strip()
+        path = str(entry.get("path", "")).strip()
+        if not isinstance(formula, str) or not recipe_id or not path:
+            continue
+        try:
+            reduced, _ = materials.reduce_formula(formula)
+        except ValueError:
+            continue
+        index.setdefault(reduced, []).append({"recipe_id": recipe_id, "path": path})
+    for reduced in index:
+        index[reduced].sort(key=lambda item: (item["recipe_id"], item["path"]))
+    return index
 
 
 def _merged_record(
@@ -185,7 +260,16 @@ def _merged_record(
             value = pubchem.get(source_key)
             if value not in (None, ""):
                 identifiers[output_key] = str(value)
-    classes = classify_material(elements, reduced_formula, source_records[0])
+    explicit_classes = {
+        str(value).strip()
+        for source_record in source_records
+        for value in source_record.get("material_classes", [])
+        if isinstance(source_record.get("material_classes", []), Sequence)
+        and not isinstance(source_record.get("material_classes", []), (str, bytes))
+        and str(value).strip()
+    }
+    classes = set(classify_material(elements, reduced_formula, {}))
+    classes.update(explicit_classes)
     return {
         "material_id": materials.material_id(reduced_formula),
         "name": name,
@@ -193,7 +277,7 @@ def _merged_record(
         "reduced_formula": reduced_formula,
         "elements": list(elements),
         "counted": True,
-        "material_classes": classes,
+        "material_classes": sorted(classes),
         "aliases": aliases,
         "identifiers": identifiers,
         "phases": phases,
@@ -214,7 +298,6 @@ def build_material_artifacts(
     target_count: int = 1000,
     manifest_template: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    del recipe_entries
     if type(target_count) is not int or target_count <= 0:
         raise ValueError("target_count must be a positive integer")
     raw_candidate_count = len(source_records)
@@ -245,11 +328,19 @@ def build_material_artifacts(
         groups.setdefault(reduced, []).append(record)
     duplicate_collapses = sum(max(0, len(group) - 1) for group in groups.values())
     pubchem = _pubchem_index(pubchem_records)
+    recipe_index = _recipe_index(recipe_entries)
     candidates: list[dict[str, Any]] = []
     relevance_exclusions = 0
     for reduced in sorted(groups):
         _, elements = materials.reduce_formula(reduced)
         record = _merged_record(reduced, elements, groups[reduced], pubchem.get(reduced))
+        links = recipe_index.get(reduced, [])
+        if links:
+            record["process_evidence"] = {
+                "status": "executable-recipe",
+                "recipe_ids": sorted({link["recipe_id"] for link in links}),
+                "recipe_paths": sorted({link["path"] for link in links}),
+            }
         if not record["material_classes"]:
             relevance_exclusions += 1
             continue
@@ -288,6 +379,11 @@ def build_material_artifacts(
         element for entry in selected for element in entry.get("elements", [])
     )
     catalog_digest = _digest(catalog)
+    recipe_linked = sum(
+        1
+        for entry in selected
+        if entry.get("process_evidence", {}).get("status") == "executable-recipe"
+    )
     audit: dict[str, Any] = {
         "schema": AUDIT_SCHEMA,
         "raw_candidate_count": raw_candidate_count,
@@ -307,7 +403,7 @@ def build_material_artifacts(
         "counted_catalog_size": len(selected),
         "class_distribution": dict(sorted(classes.items())),
         "element_distribution": dict(sorted(elements.items())),
-        "recipe_linked_materials": 0,
+        "recipe_linked_materials": recipe_linked,
         "final_material_ids": [entry["material_id"] for entry in selected],
         "source_snapshot_sha256": source_digest,
         "pubchem_snapshot_sha256": pubchem_digest,
