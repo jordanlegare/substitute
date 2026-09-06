@@ -46,6 +46,20 @@ EVIDENCE_LEVELS = (
 
 _COMPAT_REFERENCE = r"""
 
+Material identity catalog
+-------------------------
+Global input:
+  --materials-catalog PATH  Offline identity catalog (default materials/catalog.json)
+
+Commands:
+  ald-master materials search TEXT [--limit N] [--json]
+  ald-master materials show MATERIAL [--json]
+  ald-master materials list [--class CLASS] [--element ELEMENT] [--limit N] [--json]
+  ald-master materials report [--json]
+
+Material identity is distinct from process/compatibility evidence. A catalog-only
+material may be recognized while compatibility remains E0_UNKNOWN / UNKNOWN.
+
 Compatibility evidence engine
 -----------------------------
 Global inputs (place before the command):
