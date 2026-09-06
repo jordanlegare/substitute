@@ -40,16 +40,17 @@ def _walk_keys(value):
             yield from _walk_keys(child)
 
 
-def test_checked_in_material_catalog_has_exactly_1000_real_counted_formulas():
+def test_checked_in_material_catalog_has_exactly_8000_real_counted_formulas():
     entries = materials.load_material_catalog(CATALOG)
     counted = [entry for entry in entries if entry.get("counted") is True]
 
-    assert len(counted) == 1000
-    assert len({entry["reduced_formula"] for entry in counted}) == 1000
-    assert len({entry["material_id"] for entry in counted}) == 1000
+    assert len(counted) == 8000
+    assert len({entry["reduced_formula"] for entry in counted}) == 8000
+    assert len({entry["material_id"] for entry in counted}) == 8000
     assert all(len(entry["elements"]) >= 2 for entry in counted)
     assert all(entry["provenance"] for entry in counted)
     assert all(entry.get("identifiers", {}).get("cod_ids") for entry in counted)
+    assert all(entry.get("pubchem_audit", {}).get("status") == "matched" for entry in counted)
     assert all(materials.reduce_formula(entry["formula"])[0] == entry["reduced_formula"] for entry in counted)
 
 
@@ -79,7 +80,7 @@ def test_material_catalog_contains_no_operational_process_metadata():
 
 def test_material_catalog_artifacts_rebuild_byte_identically():
     result = subprocess.run(
-        [sys.executable, "tools/build_material_catalog.py", "--check", "--target-count", "1000"],
+        [sys.executable, "tools/build_material_catalog.py", "--check", "--target-count", "8000"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -92,12 +93,16 @@ def test_material_catalog_audit_and_manifest_match_milestone():
     audit = json.loads(AUDIT.read_text(encoding="utf-8"))
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
 
-    assert audit["counted_catalog_size"] == 1000
-    assert len(audit["final_material_ids"]) == 1000
-    assert audit["accepted_candidate_count_before_selection"] >= 1000
+    assert audit["counted_catalog_size"] == 8000
+    assert len(audit["final_material_ids"]) == 8000
+    assert audit["accepted_candidate_count_before_selection"] >= 8000
     assert audit["recipe_linked_materials"] > 0
-    assert audit["pubchem_enrichment_successes"] + audit["pubchem_enrichment_unresolved"] == 1000
-    assert manifest["target_count"] == 1000
-    assert manifest["selection_policy_version"] == "materials-1000-v2"
+    assert audit["target_count"] == 8000
+    assert audit["selected_count"] == 8000
+    assert audit["pubchem_matched_count"] == 8000
+    assert audit["pubchem_candidate_match_count"] >= 8000
+    assert manifest["target_count"] == 8000
+    assert manifest["selection_policy_version"] == "materials-8000-pubchem-rdf-v1"
+    assert manifest["source_metadata"]["pubchem"]["audit_mode"] == "bulk-mirror"
     assert COD_SOURCE.exists()
     assert PUBCHEM_SOURCE.exists()
