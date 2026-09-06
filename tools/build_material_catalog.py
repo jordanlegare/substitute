@@ -95,6 +95,12 @@ def classify_material(
         classes.add("phosphate" if has_oxygen else "phosphide")
     if "As" in present and not has_oxygen:
         classes.add("arsenide")
+    if "Sb" in present and not has_oxygen:
+        classes.add("antimonide")
+    if "Ge" in present and not has_oxygen:
+        classes.add("germanide")
+    if "H" in present and "C" not in present and not has_oxygen and present.intersection(_METALLIC_ELEMENTS):
+        classes.add("hydride")
     if len(present) >= 2 and present.issubset(_METALLIC_ELEMENTS):
         classes.add("intermetallic")
 
@@ -287,6 +293,8 @@ def _merged_record(
     }
     classes = set(classify_material(elements, reduced_formula, {}))
     classes.update(explicit_classes)
+    if not classes:
+        classes.add("other-inorganic")
     result = {
         "material_id": materials.material_id(reduced_formula),
         "name": name,
