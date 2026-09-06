@@ -28,6 +28,11 @@ _PUBCHEM_RDF_FORMULA_RE = re.compile(
     r'^compound:CID([0-9]+)\s+vocab:molecular_formula\s+"([^"]+)"\s+\.\s*$'
 )
 _PUBCHEM_RDF_BINARY_SEPARATOR = b"\tvocab:molecular_formula\t"
+_PUBCHEM_PRIMARY_MATERIAL_FORMERS = frozenset(
+    "Li Be B Na Mg Al Si K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Rb Sr Y Zr Nb Mo "
+    "Tc Ru Rh Pd Ag Cd In Sn Sb Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf "
+    "Ta W Re Os Ir Pt Au Hg Tl Pb Bi Th Pa U Np Pu".split()
+)
 
 
 def _text(value: Any) -> str | None:
@@ -189,11 +194,37 @@ def build_pubchem_formula_variant_index(
     return result
 
 
+def normalize_pubchem_primary_formula(formula: str) -> str | None:
+    """Return a conservative fixed-inorganic reduced formula for catalog supplementation."""
+    try:
+        reduced, elements = materials.reduce_formula(formula)
+        counts = materials.parse_formula(reduced)
+    except ValueError:
+        return None
+    present = set(elements)
+    if not 2 <= len(present) <= 4:
+        return None
+    if present.intersection({"C", "H"}):
+        return None
+    if not present.intersection(_PUBCHEM_PRIMARY_MATERIAL_FORMERS):
+        return None
+    if sum(counts.values()) > 12:
+        return None
+    return reduced
+
+
 def audit_pubchem_rdf_binary_lines(
-    lines: Iterable[bytes], formula_variants: Mapping[str, str]
+    lines: Iterable[bytes],
+    formula_variants: Mapping[str, str],
+    *,
+    supplemental_limit: int = 0,
 ) -> dict[str, Any]:
-    """Scan PubChemRDF formula triples without parsing every formula chemically."""
+    """Scan PubChemRDF triples and optionally retain bounded inorganic supplements."""
+    if type(supplemental_limit) is not int or supplemental_limit < 0:
+        raise ValueError("supplemental_limit must be a non-negative integer")
     matched_sets: dict[str, set[str]] = {}
+    supplemental_sets: dict[str, set[str]] = {}
+    target_reduced = set(formula_variants.values())
     formula_records_scanned = 0
     for line in lines:
         if not line.startswith(b"compound:CID"):
@@ -217,11 +248,20 @@ def audit_pubchem_rdf_binary_lines(
         reduced = formula_variants.get(formula)
         if reduced is not None:
             matched_sets.setdefault(reduced, set()).add(cid)
+            continue
+        if supplemental_limit and len(supplemental_sets) < supplemental_limit:
+            supplemental = normalize_pubchem_primary_formula(formula)
+            if supplemental is not None and supplemental not in target_reduced:
+                supplemental_sets.setdefault(supplemental, set()).add(cid)
     return {
         "formula_records_scanned": formula_records_scanned,
         "matched": {
             formula: sorted(cids, key=lambda value: int(value))
             for formula, cids in sorted(matched_sets.items())
+        },
+        "supplemental": {
+            formula: sorted(cids, key=lambda value: int(value))
+            for formula, cids in sorted(supplemental_sets.items())
         },
     }
 

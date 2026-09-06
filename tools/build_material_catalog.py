@@ -129,6 +129,13 @@ def relevance_score(record: Mapping[str, Any]) -> tuple[Any, ...]:
     recipe_backed = int(
         isinstance(process, Mapping) and process.get("status") == "executable-recipe"
     )
+    cod_backed = int(
+        isinstance(provenance, Sequence)
+        and any(
+            isinstance(item, Mapping) and str(item.get("source", "")).casefold() == "cod"
+            for item in provenance
+        )
+    )
     classes = set(str(value) for value in record.get("material_classes", []))
     if classes.intersection(_CORE_THIN_FILM_CLASSES):
         class_priority = 0
@@ -141,6 +148,7 @@ def relevance_score(record: Mapping[str, Any]) -> tuple[Any, ...]:
     )
     return (
         -recipe_backed,
+        -cod_backed,
         class_priority,
         element_count,
         atom_count,
@@ -326,6 +334,7 @@ def build_material_artifacts(
     target_count: int = 1000,
     manifest_template: Mapping[str, Any] | None = None,
     require_pubchem_match: bool = False,
+    include_pubchem_primary: bool = False,
     pubchem_audit_metadata: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     if type(target_count) is not int or target_count <= 0:
@@ -358,6 +367,26 @@ def build_material_artifacts(
         groups.setdefault(reduced, []).append(record)
     duplicate_collapses = sum(max(0, len(group) - 1) for group in groups.values())
     pubchem = _pubchem_index(pubchem_records)
+    if include_pubchem_primary:
+        for reduced in sorted(pubchem):
+            if reduced in groups:
+                continue
+            pubchem_record = pubchem[reduced]
+            if str(pubchem_record.get("identity_origin", "")) != "pubchem-primary":
+                continue
+            cid = str(pubchem_record.get("cid", "")).strip()
+            if not cid:
+                continue
+            groups[reduced] = [{
+                "source": "pubchem",
+                "source_id": cid,
+                "formula": reduced,
+                "name": str(
+                    pubchem_record.get("title")
+                    or pubchem_record.get("iupac_name")
+                    or reduced
+                ),
+            }]
     recipe_index = _recipe_index(recipe_entries)
     candidates: list[dict[str, Any]] = []
     relevance_exclusions = 0
@@ -437,12 +466,23 @@ def build_material_artifacts(
     pubchem_matched_count = sum(
         1 for entry in selected if entry.get("pubchem_audit", {}).get("status") == "matched"
     )
+    cod_backed_selected_count = sum(
+        1
+        for entry in selected
+        if any(
+            isinstance(item, Mapping) and str(item.get("source", "")).casefold() == "cod"
+            for item in entry.get("provenance", [])
+        )
+    )
+    pubchem_primary_selected_count = len(selected) - cod_backed_selected_count
     audit: dict[str, Any] = {
         "schema": AUDIT_SCHEMA,
         "target_count": target_count,
         "selected_count": len(selected),
         "pubchem_matched_count": pubchem_matched_count,
         "pubchem_candidate_match_count": pubchem_candidate_match_count,
+        "cod_backed_selected_count": cod_backed_selected_count,
+        "pubchem_primary_selected_count": pubchem_primary_selected_count,
         "raw_candidate_count": raw_candidate_count,
         "parseable_candidate_count": parseable_candidate_count,
         "elemental_exclusions": elemental_exclusions,
@@ -534,6 +574,9 @@ def main(argv: list[str] | None = None) -> int:
         target_count=args.target_count,
         manifest_template=template,
         require_pubchem_match=pubchem_metadata.get("audit_mode") == "bulk-mirror",
+        include_pubchem_primary=(
+            pubchem_metadata.get("selection_mode") == "cod-plus-pubchem-primary"
+        ),
         pubchem_audit_metadata=pubchem_metadata,
     )
     artifacts = (

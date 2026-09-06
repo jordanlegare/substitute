@@ -1,7 +1,8 @@
 """Audit frozen material candidates against the full PubChemRDF formula mirror.
 
-The audit streams every compound-to-molecular-formula shard and retains only CID
-matches for formulas already present in the frozen COD candidate snapshot. It is
+The audit streams every compound-to-molecular-formula shard, retains exact CID
+matches for frozen COD candidates, and can collect a bounded set of conservative
+fixed-inorganic PubChem-primary identities to fill a catalog-count shortfall. It is
 identity/provenance work only; it does not acquire process conditions or infer
 compatibility evidence.
 """
@@ -56,6 +57,7 @@ def _scan_shard(
     url: str,
     variants: dict[str, str],
     *,
+    supplemental_limit: int,
     timeout: float,
     retries: int,
 ) -> dict[str, Any]:
@@ -65,7 +67,9 @@ def _scan_shard(
             request = Request(url, headers={"User-Agent": refresh.USER_AGENT, "Accept": "application/gzip"})
             with urlopen(request, timeout=timeout) as response:
                 with gzip.GzipFile(fileobj=response, mode="rb") as stream:
-                    return refresh.audit_pubchem_rdf_binary_lines(stream, variants)
+                    return refresh.audit_pubchem_rdf_binary_lines(
+                        stream, variants, supplemental_limit=supplemental_limit
+                    )
         except (HTTPError, URLError, TimeoutError, OSError, EOFError) as exc:
             error = exc
             if attempt < retries:
@@ -80,32 +84,60 @@ def audit_full_mirror(
     base_url: str = DEFAULT_BASE_URL,
     shard_count: int = DEFAULT_SHARD_COUNT,
     max_scale: int = 16,
+    supplemental_limit: int = 0,
     timeout: float = 180.0,
     retries: int = 3,
 ) -> dict[str, Any]:
     if type(shard_count) is not int or shard_count <= 0:
         raise ValueError("shard_count must be a positive integer")
+    if type(supplemental_limit) is not int or supplemental_limit < 0:
+        raise ValueError("supplemental_limit must be a non-negative integer")
     variants = refresh.build_pubchem_formula_variant_index(target_formulas, max_scale=max_scale)
+    target_reduced = set(variants.values())
     matched_sets: dict[str, set[str]] = {}
+    supplemental_sets: dict[str, set[str]] = {}
     formula_records_scanned = 0
     shard_rows: list[dict[str, Any]] = []
     for shard in range(1, shard_count + 1):
         name = f"pc_compound2molecular_formula_{shard:06d}.ttl.gz"
         url = f"{base_url.rstrip('/')}/{name}"
-        result = _scan_shard(url, variants, timeout=timeout, retries=retries)
+        remaining = max(0, supplemental_limit - len(supplemental_sets))
+        result = _scan_shard(
+            url, variants, supplemental_limit=remaining, timeout=timeout, retries=retries
+        )
         scanned = int(result["formula_records_scanned"])
         formula_records_scanned += scanned
         shard_rows.append({"name": name, "formula_records_scanned": scanned})
         for formula, cids in result["matched"].items():
             matched_sets.setdefault(formula, set()).update(str(cid) for cid in cids)
+        for formula, cids in result.get("supplemental", {}).items():
+            if formula in target_reduced or formula in matched_sets:
+                continue
+            supplemental_sets.setdefault(formula, set()).update(str(cid) for cid in cids)
 
     records: list[dict[str, Any]] = []
     for formula in sorted(matched_sets):
         cids = sorted(matched_sets[formula], key=lambda value: int(value))
-        records.append({"reduced_formula": formula, "cid": cids[0], "cids": cids})
+        records.append({
+            "reduced_formula": formula,
+            "cid": cids[0],
+            "cids": cids,
+            "identity_origin": "cod+pubchem",
+        })
+    for formula in sorted(supplemental_sets):
+        cids = sorted(supplemental_sets[formula], key=lambda value: int(value))
+        records.append({
+            "reduced_formula": formula,
+            "cid": cids[0],
+            "cids": cids,
+            "identity_origin": "pubchem-primary",
+        })
+    records.sort(key=lambda row: (str(row["reduced_formula"]), str(row["identity_origin"])))
     return {
         "formula_records_scanned": formula_records_scanned,
-        "matched_candidate_formula_count": len(records),
+        "matched_candidate_formula_count": len(matched_sets),
+        "supplemental_formula_count": len(supplemental_sets),
+        "eligible_formula_count": len(matched_sets) + len(supplemental_sets),
         "records": records,
         "shards": shard_rows,
     }
@@ -121,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shard-count", type=int, default=DEFAULT_SHARD_COUNT)
     parser.add_argument("--compressed-bytes", type=int, default=DEFAULT_COMPRESSED_BYTES)
     parser.add_argument("--max-scale", type=int, default=16)
+    parser.add_argument("--supplemental-limit", type=int, default=4000)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--retries", type=int, default=3)
     args = parser.parse_args(argv)
@@ -133,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         base_url=args.base_url,
         shard_count=args.shard_count,
         max_scale=args.max_scale,
+        supplemental_limit=args.supplemental_limit,
         timeout=args.timeout,
         retries=args.retries,
     )
@@ -141,10 +175,15 @@ def main(argv: list[str] | None = None) -> int:
         "audit_mode": "bulk-mirror",
         "mirror": "PubChemRDF",
         "mirror_release_date": args.release_date,
+        "selection_mode": "cod-plus-pubchem-primary",
         "requested_material_count": args.requested_material_count,
         "audited_candidate_formula_count": len(candidates),
         "formula_records_scanned": result["formula_records_scanned"],
         "matched_candidate_formula_count": result["matched_candidate_formula_count"],
+        "supplemental_formula_count": result["supplemental_formula_count"],
+        "eligible_formula_count": result["eligible_formula_count"],
+        "supplemental_limit": args.supplemental_limit,
+        "supplemental_policy": "fixed formula; 2-4 elements; no C/H; material former required; <=12 reduced atoms",
         "shard_count": args.shard_count,
         "compressed_bytes": args.compressed_bytes,
         "mirror_base_url": args.base_url,
@@ -154,9 +193,11 @@ def main(argv: list[str] | None = None) -> int:
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(materials.canonical_json_bytes(payload))
-    if result["matched_candidate_formula_count"] < args.requested_material_count:
+    if result["eligible_formula_count"] < args.requested_material_count:
         raise RuntimeError(
-            f"PubChemRDF matched only {result['matched_candidate_formula_count']} candidate formulas; "
+            f"PubChemRDF produced only {result['eligible_formula_count']} eligible formulas "
+            f"({result['matched_candidate_formula_count']} COD matches + "
+            f"{result['supplemental_formula_count']} PubChem-primary); "
             f"need {args.requested_material_count}"
         )
     return 0
