@@ -62,7 +62,8 @@ def test_checked_in_catalog_is_current_and_canonical():
 def test_expansion_catalog_entry_preserves_evidence_linkage():
     record = selected_expansion_record()
     recipe = core.validate_recipe(build_recipe(record))
-    entry = _entry(Path("recipes/compounds/oxides/tio2_evidence_expansion.json"), recipe)
+    path = Path.cwd() / "recipes/compounds/oxides/tio2_evidence_expansion.json"
+    entry = _entry(path, recipe)
     assert entry["recipe_origin"] == "evidence-expansion"
     assert entry["evidence_record_id"] == record["evidence_id"]
     assert entry["process_family"] == "thermal-ald"
