@@ -19,11 +19,17 @@ def direct_record(**overrides):
         "process_family": "thermal-ald",
         "reactants": [
             {
+                "label": "HfCl4",
                 "name": "hafnium tetrachloride",
                 "formula": "HfCl4",
-                "role": "metal-source",
+                "role": "reactant-a",
             },
-            {"name": "water", "formula": "H2O", "role": "co-reactant"},
+            {
+                "label": "H2O",
+                "name": "water",
+                "formula": "H2O",
+                "role": "reactant-b",
+            },
         ],
         "publications": [
             {
@@ -76,6 +82,22 @@ def test_validation_normalizes_direct_record_without_mutating_input():
     assert normalized["stable_publication_identifier_count"] == 1
     assert normalized["chemistry_key"]
     assert normalized["evidence_id"].startswith("ev-hfo2-")
+
+
+def test_validation_accepts_unambiguous_source_label_without_fabricated_name_or_formula():
+    raw = direct_record(
+        reactants=[
+            {"label": "Al(NiPr2)3", "role": "reactant-a"},
+            {"label": "H2O", "role": "reactant-b", "formula": "H2O", "name": "water"},
+        ]
+    )
+    normalized = validate_evidence_record(raw)
+
+    assert normalized["reactants"][0] == {
+        "label": "Al(NiPr2)3",
+        "role": "reactant-a",
+    }
+    assert normalized["reactant_identities_complete"] is True
 
 
 def test_validation_rejects_operational_fields_recursively():
