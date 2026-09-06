@@ -514,10 +514,18 @@ def chemistry_sources(
 
 
 def chemistry_report(
-    entries: Sequence[Mapping[str, object]], *, material_count: int = 8000
+    entries: Sequence[Mapping[str, object]],
+    *,
+    material_count: int = 8000,
+    recipe_backed_material_count: int | None = None,
 ) -> dict[str, object]:
     if type(material_count) is not int or material_count < 0:
         raise ValueError("material_count must be a non-negative integer")
+    if recipe_backed_material_count is not None:
+        if type(recipe_backed_material_count) is not int or recipe_backed_material_count < 0:
+            raise ValueError("recipe_backed_material_count must be a non-negative integer")
+        if recipe_backed_material_count > material_count:
+            raise ValueError("recipe_backed_material_count cannot exceed material_count")
     origins = Counter(str(entry.get("origin", "historical")) for entry in entries)
     evidence_grades = Counter(str(entry.get("evidence_grade", "historical")) for entry in entries)
     process_families = Counter(
@@ -549,7 +557,11 @@ def chemistry_report(
         )
         if isinstance(source, Mapping) and source.get("identifier")
     }
-    recipe_backed_materials_in_identity_catalog = len(material_ids)
+    recipe_backed_materials_in_identity_catalog = (
+        len(material_ids)
+        if recipe_backed_material_count is None
+        else recipe_backed_material_count
+    )
     return {
         "total_executable_recipes": len(entries),
         "unique_recipe_backed_materials": len(target_keys),

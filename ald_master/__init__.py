@@ -571,8 +571,14 @@ def _dispatch_chemistry(args: argparse.Namespace) -> int:
                 )
                 print(f"{text}{' — ' + detail if detail else ''}")
         return 0
-    material_count = len(_load_material_entries(args))
-    result = chemistry_catalog.chemistry_report(entries, material_count=material_count)
+    material_entries = _load_material_entries(args)
+    material_count = len(material_entries)
+    material_summary = material_catalog.material_report(material_entries)
+    result = chemistry_catalog.chemistry_report(
+        entries,
+        material_count=material_count,
+        recipe_backed_material_count=int(material_summary["recipe_linked_materials"]),
+    )
     if args.json:
         _json_print(result)
     else:
