@@ -187,3 +187,17 @@ def test_build_frozen_evidence_excludes_candidates_outside_material_universe():
     )
     assert {record["target_reduced_formula"] for record in evidence_doc["records"]} == {"OZn"}
     assert audit["counts"]["source_candidates_outside_material_catalog"] == 1
+
+
+def test_build_frozen_evidence_collapses_duplicate_canonical_evidence_ids():
+    duplicate = _candidate("HfO2", "10.1234/hfo2", grade="R3")
+    evidence_doc, _manifest, audit = build_frozen_evidence(
+        [duplicate, dict(duplicate)],
+        {"entries": [_material_entry("HfO2")]},
+        {"entries": []},
+        source_metadata={"awases_ref": "abc123"},
+    )
+
+    assert len(evidence_doc["records"]) == 1
+    assert evidence_doc["records"][0]["selection_status"] == "selected"
+    assert audit["counts"]["duplicate_evidence_collapses"] == 1
