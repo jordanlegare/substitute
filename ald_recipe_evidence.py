@@ -16,6 +16,7 @@ EVIDENCE_SCHEMA = "ald-recipe-evidence/1"
 ALLOWED_PROCESS_FAMILIES = frozenset({"thermal-ald", "plasma-ald", "mld", "hybrid"})
 ALLOWED_GRADES = frozenset({"R1", "R2", "R3"})
 ALLOWED_STATUSES = frozenset({"candidate", "selected", "rejected", "covered-existing"})
+GRADE_RANK = {"R3": 0, "R2": 1, "R1": 2}
 
 FORBIDDEN_OPERATIONAL_KEYS = frozenset(
     {
@@ -288,7 +289,6 @@ def validate_evidence_record(record: Mapping[str, object]) -> dict[str, object]:
         if type(value) is str and value.strip():
             normalized[key] = value.strip()
 
-    # Preserve safe provenance-only extensions without letting them affect identity.
     for key in ("provenance", "discovery_metadata"):
         value = record.get(key)
         if value is not None:
@@ -296,3 +296,73 @@ def validate_evidence_record(record: Mapping[str, object]) -> dict[str, object]:
 
     normalized["evidence_id"] = evidence_id(normalized)
     return normalized
+
+
+def selection_sort_key(record: Mapping[str, object]) -> tuple[object, ...]:
+    grade = str(record.get("evidence_grade", "R1"))
+    if grade not in GRADE_RANK:
+        raise ValueError(f"unsupported evidence grade: {grade}")
+    return (
+        GRADE_RANK[grade],
+        0 if record.get("reactant_identities_complete") is True else 1,
+        -int(record.get("independent_direct_publication_count", 0)),
+        len(record.get("reactants", [])),
+        0 if int(record.get("stable_publication_identifier_count", 0)) > 0 else 1,
+        str(record.get("chemistry_key", "")),
+        str(record.get("evidence_id", "")),
+    )
+
+
+def _with_status(
+    record: Mapping[str, object],
+    status: str,
+    rejection_reason: str | None = None,
+) -> dict[str, object]:
+    updated = dict(record)
+    updated["selection_status"] = status
+    if rejection_reason is None:
+        updated.pop("rejection_reason", None)
+    else:
+        updated["rejection_reason"] = rejection_reason
+    return updated
+
+
+def select_best_candidates(
+    records: Sequence[Mapping[str, object]],
+    existing_target_formulas: set[str],
+) -> list[dict[str, object]]:
+    existing = {materials.reduce_formula(value)[0] for value in existing_target_formulas}
+    groups: dict[str, list[dict[str, object]]] = {}
+    for raw in records:
+        normalized = validate_evidence_record(raw)
+        groups.setdefault(str(normalized["target_reduced_formula"]), []).append(normalized)
+
+    results: list[dict[str, object]] = []
+    for target_formula in sorted(groups):
+        group = groups[target_formula]
+        group.sort(key=lambda item: (selection_sort_key(item), str(item["evidence_id"])))
+        if target_formula in existing:
+            results.extend(
+                _with_status(item, "covered-existing", "already-recipe-backed")
+                for item in group
+            )
+            continue
+
+        eligible = [item for item in group if item["evidence_grade"] in {"R2", "R3"}]
+        winner_id = str(min(eligible, key=selection_sort_key)["evidence_id"]) if eligible else None
+        for item in group:
+            if item["evidence_grade"] not in {"R2", "R3"}:
+                results.append(_with_status(item, "rejected", "insufficient-evidence"))
+            elif str(item["evidence_id"]) == winner_id:
+                results.append(_with_status(item, "selected"))
+            else:
+                results.append(_with_status(item, "rejected", "not-best-chemistry"))
+
+    results.sort(
+        key=lambda item: (
+            str(item["target_reduced_formula"]),
+            str(item["selection_status"]),
+            str(item["evidence_id"]),
+        )
+    )
+    return results
