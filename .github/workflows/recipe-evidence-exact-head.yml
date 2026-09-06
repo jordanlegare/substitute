@@ -1,0 +1,117 @@
+name: Recipe evidence exact-head verification
+
+on:
+  push:
+    branches:
+      - verify/recipe-evidence-c1aaccc
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact feature SHA
+        uses: actions/checkout@v4
+        with:
+          ref: c1aaccc1192527dd4e8c0eb44350db6570a343f1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Install project
+        run: python -m pip install -e '.[test,signature]'
+      - name: Verify exact checkout and base ref
+        run: |
+          test "$(git rev-parse HEAD)" = "c1aaccc1192527dd4e8c0eb44350db6570a343f1"
+          git fetch origin feature/material-catalog-8000:refs/remotes/origin/feature/material-catalog-8000
+          git diff --check origin/feature/material-catalog-8000...HEAD
+      - name: Verify canonical evidence and catalogs
+        run: |
+          python tools/audit_recipe_evidence.py
+          python tools/build_recipe_expansion.py --check
+          python tools/build_compound_catalog.py --check
+          python tools/build_material_catalog.py --check --target-count 8000
+      - name: Full test suite
+        run: python -m pytest -q
+      - name: Chemistry CLI smoke and non-operational projection
+        run: |
+          mkdir -p build/exact-head
+          ald-master chemistry report
+          ald-master chemistry search HfO2 --limit 5
+          ald-master chemistry show HfO2
+          ald-master chemistry sources HfO2
+          ald-master chemistry show HfO2 --json > build/exact-head/chemistry-show.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path('build/exact-head/chemistry-show.json').read_text())
+          forbidden = {
+              'process_temperature','temperature','temperature_c','pressure','pressure_pa',
+              'pulse','pulse_time','dose','dose_time','purge','purge_time','growth_rate',
+              'growth_per_cycle','plasma_power','plasma_bias','flow','flow_sccm','hardware',
+              'reactor','reactor_geometry','handling_notes',
+          }
+          def walk(value, path='root'):
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      folded = str(key).strip().casefold().replace('-', '_')
+                      assert folded not in forbidden, f'operational key leaked at {path}.{key}'
+                      walk(item, f'{path}.{key}')
+              elif isinstance(value, list):
+                  for index, item in enumerate(value):
+                      walk(item, f'{path}[{index}]')
+          walk(payload)
+          PY
+      - name: HLS end-to-end acceptance
+        run: |
+          rm -rf build/exact-head/hls
+          mkdir -p build/exact-head/hls
+          ald-media-controller compile recipes/generic_al2o3.json --output build/exact-head/hls/bundle
+          ald-media-controller verify build/exact-head/hls/bundle/stream.m3u8
+          ald-media-controller simulate recipes/generic_al2o3.json --seed 42 --output build/exact-head/hls/direct
+          ald-media-controller simulate-media build/exact-head/hls/bundle/stream.m3u8 --seed 42 --output build/exact-head/hls/media
+          cmp build/exact-head/hls/direct/cycles.csv build/exact-head/hls/media/cycles.csv
+          cmp build/exact-head/hls/direct/surface-final.json build/exact-head/hls/media/surface-final.json
+      - name: Product MP4 end-to-end acceptance
+        run: |
+          rm -rf build/exact-head/product
+          mkdir -p build/exact-head/product
+          ald-media-controller compile-product recipes/majorana2_public_specs_reference_sim.json --seed 42 --output build/exact-head/product/bundle
+          ald-media-controller verify-product build/exact-head/product/bundle/bundle.json
+          ald-media-controller simulate recipes/majorana2_public_specs_reference_sim.json --seed 42 --output build/exact-head/product/direct
+          ald-media-controller simulate-product build/exact-head/product/bundle/bundle.json --seed 42 --output build/exact-head/product/replayed
+          cmp build/exact-head/product/direct/cycles.csv build/exact-head/product/replayed/cycles.csv
+          cmp build/exact-head/product/direct/surface-final.json build/exact-head/product/replayed/surface-final.json
+          openssl genpkey -algorithm Ed25519 -out build/exact-head/product/private.pem
+          openssl pkey -in build/exact-head/product/private.pem -pubout -out build/exact-head/product/public.pem
+          ald-media-controller compile-product recipes/majorana2_public_specs_reference_sim.json --seed 42 --output build/exact-head/product/signed-bundle --signing-key build/exact-head/product/private.pem
+          ald-media-controller verify-product build/exact-head/product/signed-bundle/bundle.json --require-signature --trusted-public-key build/exact-head/product/public.pem
+      - name: Assert Product MP4 stream profile
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          product = Path('build/exact-head/product/bundle/product.mp4')
+          raw = subprocess.check_output([
+              'ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(product)
+          ], text=True)
+          streams = json.loads(raw)['streams']
+          assert len(streams) == 3, streams
+          by_type = {stream['codec_type']: stream for stream in streams}
+          assert set(by_type) == {'video', 'audio', 'data'}, by_type
+          assert by_type['video']['codec_name'] == 'h264', by_type['video']
+          assert by_type['audio']['codec_name'] == 'aac', by_type['audio']
+          assert by_type['data']['codec_name'] == 'bin_data', by_type['data']
+          assert by_type['data']['codec_tag_string'] == 'gpmd', by_type['data']
+          assert by_type['data'].get('tags', {}).get('handler_name') == 'ALD Instruction Data', by_type['data']
+          PY
