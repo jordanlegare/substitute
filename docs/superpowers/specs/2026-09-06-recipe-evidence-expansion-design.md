@@ -18,6 +18,7 @@ There is no arbitrary recipe-count target. The stopping condition is evidence ex
 4. **Process scope:** thermal ALD, PEALD, MLD, and hybrid cyclic deposition processes.
 5. **Hybrid evidence funnel:** AtomicLimits is the primary process-discovery index; direct scholarly metadata/search is the fallback for unmatched materials.
 6. **No inferred analogue chemistry.** Similarity to another material or precursor family never creates an executable recipe.
+7. **Exact source labels are valid reactant identities.** AtomicLimits-derived records often identify a precursor/co-reactant by an explicit formula, shorthand, plasma label, or source-specific chemical label rather than a canonical common name. The exact reported label is required and preserved; canonical `name` and `formula` fields are optional enrichments and must never be invented merely to satisfy a schema.
 
 ## Scientific and safety boundary
 
@@ -88,9 +89,8 @@ Each candidate record stores only non-operational chemistry/provenance informati
 - target formula and normalized reduced formula;
 - material catalog ID where available;
 - process family: `thermal-ald`, `plasma-ald`, `mld`, or `hybrid`;
-- precursor/co-reactant names;
-- precursor/co-reactant formulas where resolvable;
-- precursor/co-reactant roles;
+- reactants, each with a required exact `label` and deterministic role (`reactant-a` through `reactant-d` for AtomicLimits-derived records);
+- optional canonical reactant `name` and `formula` only where an authoritative source resolves them explicitly;
 - DOI or another stable publication identifier;
 - publication title/year/journal metadata when available;
 - discovery source (`atomiclimits`, `crossref`, `openalex`, or fallback search source);
@@ -98,7 +98,7 @@ Each candidate record stores only non-operational chemistry/provenance informati
 - selection status;
 - deterministic rejection reason where rejected.
 
-Operational process conditions are forbidden from this ledger.
+Operational process conditions are forbidden from this ledger. Full text and abstracts may be used transiently during explicit acquisition to classify or validate a record, but they are not persisted in the canonical evidence ledger.
 
 ## Evidence grades
 
@@ -109,9 +109,11 @@ A direct publication explicitly supports target plus full chemistry, and the che
 - AtomicLimits indexing;
 - another independent direct publication reporting the same normalized chemistry.
 
+An expert-reviewed AtomicLimits process annotation linked to a stable direct-publication identifier may provide the corroborating structured extraction, but the linked publication identifier remains part of the evidence record.
+
 ### R2 — direct
 
-A resolvable direct publication explicitly reports the target and all required precursor/co-reactant identities.
+A resolvable direct publication explicitly reports the target and all required precursor/co-reactant identities. An unambiguous source label is sufficient reactant identity; a canonical chemical name is not required when the source itself uses a stable formula/shorthand label.
 
 ### R1 — discovery only
 
@@ -124,7 +126,7 @@ A review, database mention, abstract-only match, ambiguous process description, 
 For each material without an existing recipe, all R2/R3 candidates are sorted by the following tuple, lowest value wins after normalizing booleans/counts appropriately:
 
 1. stronger evidence grade (`R3` before `R2`);
-2. complete normalized precursor/co-reactant identities before partial-name-only records;
+2. complete normalized precursor/co-reactant identities before incomplete records;
 3. more independent direct supporting publications;
 4. fewer distinct reactants/precursors;
 5. stable DOI/publication identifiers present;
@@ -143,8 +145,7 @@ Literature controls only:
 
 - target material;
 - target formula;
-- precursor identities;
-- co-reactant identities;
+- exact precursor/co-reactant source labels and any independently resolved canonical identity fields;
 - process-family label;
 - source references.
 
@@ -164,6 +165,8 @@ Every generated recipe must satisfy the repository's existing hard gates:
 - `ald_core.compile_recipe(...)` succeeds;
 - forbidden operational metadata keys remain absent.
 
+For the legacy recipe schema, a source label may be carried as the precursor display name and formula token when no canonical name/formula can be resolved. User-facing chemistry exploration must distinguish this as an exact **source label** and must not present it as a newly inferred canonical formula.
+
 ## Existing-recipe compatibility rule
 
 The expansion is based on `feature/material-catalog-8000` and does not delete, rename, or rewrite existing recipe files.
@@ -176,7 +179,7 @@ This preserves existing CLI behavior, compatibility evidence, candidate ranking,
 
 ### Primary process index — AtomicLimits
 
-AtomicLimits is the primary discovery source for reported ALD processes and their literature references. It is used to identify candidate target/precursor/co-reactant combinations and associated publications.
+AtomicLimits is the primary discovery source for reported ALD processes and their literature references. A pinned structured derivative/export may be used as transport when it preserves the AtomicLimits process material, reactant labels, review metadata, and publication identifiers. Rendered AtomicLimits UI pages are not scraped.
 
 ### DOI normalization — Crossref
 
@@ -229,8 +232,7 @@ A candidate is rejected if any of the following applies:
 - target formula is variable, symbolic, ambiguous, or cannot normalize to one fixed material identity;
 - target does not map to a material in the 8,000-material catalog unless it is already present in the existing recipe catalog for backward compatibility;
 - publication cannot be resolved to a DOI or another stable publication identifier;
-- precursor identity is missing or ambiguous;
-- required co-reactant identity is missing or ambiguous;
+- required precursor/co-reactant source label is missing or ambiguous;
 - the paper only mentions the material but does not report that deposition chemistry;
 - the process is CVD, PVD, solution growth, sputtering, evaporation, or another non-cyclic deposition process rather than ALD/PEALD/MLD/hybrid;
 - source evidence is only a review/database mention with no sufficiently resolved direct chemistry evidence;
