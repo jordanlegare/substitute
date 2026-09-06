@@ -9,6 +9,7 @@ from tools.refresh_recipe_evidence import (
     classify_process_family,
     normalize_crossref_work,
     normalize_openalex_work,
+    parse_atomiclimits_api_payload,
     parse_awases_rows,
 )
 
@@ -52,6 +53,76 @@ def test_classify_process_family_is_conservative_and_deterministic():
     assert classify_process_family("Hybrid ALD/MLD supercycle", "", "") == "hybrid"
     assert classify_process_family("Atomic layer deposition of alumina", "", "") == "thermal-ald"
     assert classify_process_family("Chemical vapor deposition of silica", "", "") is None
+
+
+def test_atomiclimits_live_api_joins_references_and_preserves_source_labels_only():
+    payload = {
+        "success": True,
+        "processes": [
+            {
+                "process_id": "429",
+                "process_material": "ZrO2",
+                "process_reactantA": "Zr(OtBu)4",
+                "process_reactantB": "H2O",
+                "process_reactantC": "",
+                "process_reactantD": "",
+                "process_note": "reported at 250 C",
+                "process_reviewed": "1",
+            },
+            {
+                "process_id": "9001",
+                "process_material": "TiN",
+                "process_reactantA": "TiCl4",
+                "process_reactantB": "N2/H2 plasma",
+                "process_reactantC": "",
+                "process_reactantD": "",
+                "process_note": "300 W plasma",
+                "process_reviewed": "1",
+            },
+        ],
+        "references": [
+            {
+                "reference_id": "2205",
+                "process_id": "429",
+                "reference_doi": "10.3938/jkps.45.1249",
+                "reference_reviewed": "1",
+            },
+            {
+                "reference_id": "2207",
+                "process_id": "429",
+                "reference_doi": "10.1002/example",
+                "reference_reviewed": "1",
+            },
+            {
+                "reference_id": "9900",
+                "process_id": "9001",
+                "reference_doi": "10.1234/tin-plasma",
+                "reference_reviewed": "1",
+            },
+        ],
+    }
+
+    records = parse_atomiclimits_api_payload(payload)
+
+    assert [record["target_reduced_formula"] for record in records] == ["NTi", "O2Zr"]
+    tin, zirconia = records
+    assert tin["process_family"] == "plasma-ald"
+    assert tin["reactants"] == [
+        {"label": "TiCl4", "role": "reactant-a"},
+        {"label": "N2/H2 plasma", "role": "reactant-b"},
+    ]
+    assert tin["evidence_grade"] == "R3"
+    assert zirconia["process_family"] == "thermal-ald"
+    assert [item["identifier"] for item in zirconia["publications"]] == [
+        "10.1002/example",
+        "10.3938/jkps.45.1249",
+    ]
+    assert zirconia["evidence_grade"] == "R3"
+
+    serialized = json.dumps(records).casefold()
+    assert "250 c" not in serialized
+    assert "300 w" not in serialized
+    assert "process_note" not in serialized
 
 
 def test_awases_parser_keeps_only_fixed_ald_targets_and_exact_source_labels():
