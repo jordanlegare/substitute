@@ -27,3 +27,13 @@ def test_pubchem_rdf_audit_matches_reduced_formulas_and_keeps_all_cids():
         "TiO2": ["20"],
     }
     assert result["unsupported_formula_records"] == 1
+
+
+def test_pubchem_rdf_variant_index_supports_formula_unit_multiples():
+    build_index = getattr(refresh, "build_pubchem_formula_variant_index", None)
+    assert callable(build_index)
+    index = build_index({"HfO2", "TiO2"}, max_scale=3)
+    assert index["HfO2"] == "HfO2"
+    assert index["Hf2O4"] == "HfO2"
+    assert index["Hf3O6"] == "HfO2"
+    assert index["O2Ti"] == "TiO2" or index["TiO2"] == "TiO2"
