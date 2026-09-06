@@ -49,6 +49,28 @@ def test_intermetallics_remain_eligible_materials():
     assert "intermetallic" in classes
 
 
+def test_fixed_inorganic_semiconductor_and_hydride_families_are_classified():
+    assert "antimonide" in builder.classify_material(("Ga", "Sb"), "GaSb", {})
+    assert "germanide" in builder.classify_material(("Fe", "Ge"), "FeGe", {})
+    assert "hydride" in builder.classify_material(("H", "Mg"), "H2Mg", {})
+
+
+def test_unclassified_fixed_inorganic_identity_gets_low_priority_fallback_class():
+    source_records = [
+        {"source": "cod", "source_id": "1", "formula": "GaSb", "name": "gallium antimonide"},
+        {"source": "cod", "source_id": "2", "formula": "KrF2", "name": "krypton difluoride"},
+    ]
+    catalog, _manifest, _audit = builder.build_material_artifacts(
+        source_records,
+        [],
+        [],
+        target_count=2,
+    )
+    by_formula = {entry["reduced_formula"]: entry for entry in catalog["entries"]}
+    assert "antimonide" in by_formula["GaSb"]["material_classes"]
+    assert by_formula["F2Kr"]["material_classes"] == ["fluoride"]
+
+
 def test_recipe_backed_materials_are_linked_and_prioritized():
     source_records = [
         {"source": "cod", "source_id": "1", "formula": "HfO2", "name": "hafnium dioxide"},
