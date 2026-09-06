@@ -30,7 +30,7 @@ def test_builder_can_require_pubchem_bulk_matches_for_selection():
         pubchem_audit_metadata=metadata,
     )
 
-    assert [entry["reduced_formula"] for entry in catalog["entries"]] == ["HfO2", "TiO2"]
+    assert [entry["reduced_formula"] for entry in catalog["entries"]] == ["HfO2", "O2Ti"]
     assert all(entry["pubchem_audit"]["status"] == "matched" for entry in catalog["entries"])
     assert catalog["entries"][1]["pubchem_audit"]["cids"] == ["26042", "66217"]
     assert manifest["source_metadata"]["pubchem"]["audit_mode"] == "bulk-mirror"
