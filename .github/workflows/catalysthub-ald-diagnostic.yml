@@ -1,0 +1,64 @@
+name: CatalystHub ALD diagnostic
+
+on:
+  push:
+    branches:
+      - feature/recipe-evidence-expansion
+    paths:
+      - .github/workflows/catalysthub-ald-diagnostic.yml
+
+permissions:
+  contents: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/recipe-evidence-expansion
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Inspect query/export surface
+        run: |
+          python - <<'PY'
+          from html.parser import HTMLParser
+          from urllib.parse import urljoin
+          from urllib.request import Request, urlopen
+          import re
+
+          base = 'https://www.catalysthub.net/ALDdatabase_query.php'
+          req = Request(base, headers={'User-Agent':'substitute-recipe-evidence/1'})
+          html = urlopen(req, timeout=60).read().decode('utf-8','replace')
+          print('HTML_BYTES', len(html))
+
+          class P(HTMLParser):
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  if tag in {'form','input','button','script','select'}:
+                      interesting = {k:v for k,v in attrs.items() if k in {'action','method','name','value','type','id','src','onclick'}}
+                      if interesting:
+                          print('TAG', tag, interesting)
+          P().feed(html)
+
+          scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)', html, flags=re.I)
+          for src in scripts:
+              url = urljoin(base, src)
+              try:
+                  text = urlopen(Request(url, headers={'User-Agent':'substitute-recipe-evidence/1'}), timeout=60).read().decode('utf-8','replace')
+              except Exception as exc:
+                  print('SCRIPT_ERROR', url, repr(exc)); continue
+              hits = [line.strip() for line in text.splitlines() if re.search(r'csv|ajax|download|ALDdatabase|query\.php|\.php|fetch\(|XMLHttpRequest', line, re.I)]
+              if hits:
+                  print('SCRIPT', url, 'BYTES', len(text))
+                  for line in hits[:120]:
+                      print('JS', line[:1000])
+          PY
+      - name: Remove diagnostic workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/catalysthub-ald-diagnostic.yml
+          git commit -m "chore: complete CatalystHub ALD diagnostic"
+          git push origin HEAD:feature/recipe-evidence-expansion
