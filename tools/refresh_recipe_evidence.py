@@ -418,7 +418,8 @@ def build_frozen_evidence(
         if reduced is not None and reduced in material_by_formula:
             existing_targets.add(reduced)
 
-    in_universe: list[dict[str, object]] = []
+    in_universe_by_id: dict[str, dict[str, object]] = {}
+    in_universe_candidate_count = 0
     outside_material_catalog = 0
     for raw in source_records:
         normalized = evidence.validate_evidence_record(raw)
@@ -427,12 +428,18 @@ def build_frozen_evidence(
         if material is None:
             outside_material_catalog += 1
             continue
+        in_universe_candidate_count += 1
         material_id = material.get("material_id")
         if isinstance(material_id, str) and material_id.strip():
             normalized["material_id"] = material_id.strip()
             normalized = evidence.validate_evidence_record(normalized)
-        in_universe.append(normalized)
+        record_id = str(normalized["evidence_id"])
+        previous = in_universe_by_id.get(record_id)
+        if previous is None or evidence.canonical_json_bytes(normalized) < evidence.canonical_json_bytes(previous):
+            in_universe_by_id[record_id] = normalized
 
+    in_universe = list(in_universe_by_id.values())
+    duplicate_evidence_collapses = in_universe_candidate_count - len(in_universe)
     selected_records = evidence.select_best_candidates(in_universe, existing_targets)
     selected_records.sort(
         key=lambda item: (
@@ -509,7 +516,9 @@ def build_frozen_evidence(
             0, material_count - existing_material_count
         ),
         "atomiclimits_candidates": len(source_records),
-        "source_candidates_in_material_catalog": len(in_universe),
+        "source_candidates_in_material_catalog": in_universe_candidate_count,
+        "unique_source_candidates_in_material_catalog": len(in_universe),
+        "duplicate_evidence_collapses": duplicate_evidence_collapses,
         "source_candidates_outside_material_catalog": outside_material_catalog,
         "direct_publication_records_resolved": len(direct_publications),
         "r3_selected": r3_selected,
