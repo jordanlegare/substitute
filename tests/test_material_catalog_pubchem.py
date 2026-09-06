@@ -88,19 +88,19 @@ def test_builder_can_fill_shortfall_with_explicit_pubchem_primary_identity():
 
 def test_cod_backed_identity_ranks_before_pubchem_primary_supplement():
     source_records = [
-        {"source": "cod", "source_id": "1", "formula": "GaSb", "name": "gallium antimonide"},
+        {"source": "cod", "source_id": "1", "formula": "InSb", "name": "indium antimonide"},
     ]
     pubchem_records = [
-        {
-            "reduced_formula": "GaSb",
-            "cid": "160954",
-            "cids": ["160954"],
-            "identity_origin": "cod+pubchem",
-        },
         {
             "reduced_formula": "InSb",
             "cid": "5355353",
             "cids": ["5355353"],
+            "identity_origin": "cod+pubchem",
+        },
+        {
+            "reduced_formula": "GaSb",
+            "cid": "160954",
+            "cids": ["160954"],
             "identity_origin": "pubchem-primary",
         },
     ]
@@ -115,4 +115,4 @@ def test_cod_backed_identity_ranks_before_pubchem_primary_supplement():
         pubchem_audit_metadata={"mirror": "PubChemRDF", "mirror_release_date": "2026-07-25"},
     )
 
-    assert [entry["reduced_formula"] for entry in catalog["entries"]] == ["GaSb"]
+    assert [entry["reduced_formula"] for entry in catalog["entries"]] == ["InSb"]
