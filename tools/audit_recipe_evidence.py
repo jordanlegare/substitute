@@ -141,14 +141,19 @@ def audit_evidence(
     historical_targets: set[str] = set()
     generated: list[Mapping[str, object]] = []
     for index, entry in enumerate(recipe_entries):
-        target = _reduced_formula(
-            entry.get("target_formula"),
-            f"recipe catalog entries[{index}].target_formula",
-        )
+        field = f"recipe catalog entries[{index}].target_formula"
         if entry.get("recipe_origin") == "evidence-expansion":
+            target = _reduced_formula(entry.get("target_formula"), field)
             generated.append(entry)
-        else:
-            historical_targets.add(target)
+            continue
+        try:
+            target = _reduced_formula(entry.get("target_formula"), field)
+        except ValueError:
+            # Historical recipes may intentionally use symbolic/nonstoichiometric
+            # labels such as CoSx. They remain valid historical recipes but cannot
+            # participate in fixed-formula material/evidence collision checks.
+            continue
+        historical_targets.add(target)
 
     collisions = sorted(set(selected_by_target).intersection(historical_targets))
     if collisions:
