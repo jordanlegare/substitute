@@ -1,0 +1,139 @@
+name: Material catalog 8000 full mirror audit
+
+on:
+  push:
+    branches:
+      - automation/material-catalog-8000-data
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/material-catalog-8000
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install audit dependencies
+        run: python -m pip install -e '.[test]' 'duckdb>=1.1,<2'
+      - name: Acquire complete eligible COD candidate pool
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import duckdb
+          import ald_materials as materials
+          from tools import build_material_catalog as builder
+
+          url = 'https://huggingface.co/datasets/LMucko/crystallography-open-database/resolve/main/cod_full.parquet'
+          con = duckdb.connect()
+          con.execute('INSTALL httpfs')
+          con.execute('LOAD httpfs')
+          rows = con.execute(
+              '''
+              SELECT file, formula, sg, mineral, chemname, commonname, doi, title, journal, year
+              FROM read_parquet(?)
+              WHERE formula IS NOT NULL AND file IS NOT NULL
+              ORDER BY file
+              ''',
+              [url],
+          ).fetchall()
+
+          by_formula = {}
+          for row in rows:
+              file_id, formula, sg, mineral, chemname, commonname, doi, title, journal, year = row
+              cleaned = str(formula).strip().strip('-').strip()
+              if not cleaned:
+                  continue
+              try:
+                  reduced, elements = materials.reduce_formula(cleaned)
+              except ValueError:
+                  continue
+              if len(elements) < 2 or ('C' in elements and 'H' in elements):
+                  continue
+              if not builder.classify_material(elements, reduced, {}):
+                  continue
+              group = by_formula.setdefault(reduced, [])
+              if len(group) >= 2:
+                  continue
+              name = next(
+                  (str(value).strip() for value in (mineral, chemname, commonname) if value and str(value).strip()),
+                  reduced,
+              )
+              record = {'source': 'cod', 'source_id': str(file_id), 'formula': cleaned, 'name': name}
+              if sg and str(sg).strip():
+                  record['space_group'] = str(sg).strip()
+              if doi and str(doi).strip():
+                  record['doi'] = str(doi).strip()
+              ref = [str(value).strip() for value in (title, journal, year) if value and str(value).strip()]
+              if ref:
+                  record['reference'] = ' | '.join(ref)
+              group.append(record)
+
+          records = [record for formula in sorted(by_formula) for record in by_formula[formula]]
+          root = Path('materials/sources')
+          root.mkdir(parents=True, exist_ok=True)
+          (root / 'cod-materials.json').write_bytes(materials.canonical_json_bytes({'records': records}))
+          Path('materials/source-manifest.json').write_bytes(materials.canonical_json_bytes({
+              'retrieved_at': '2026-09-06T00:00:00Z',
+              'target_count': 8000,
+              'selection_policy_version': 'materials-8000-pubchem-rdf-v1',
+              'source_metadata': {
+                  'cod': {
+                      'primary_database': 'Crystallography Open Database',
+                      'transport_mirror': 'LMucko/crystallography-open-database',
+                      'mirror_snapshot_date': '2026-07-06',
+                      'license': 'CC0-1.0',
+                      'mirror_parquet': url,
+                      'full_rows_scanned': len(rows),
+                      'eligible_unique_formulas': len(by_formula),
+                      'retained_unique_formula_pool': len(by_formula),
+                  },
+              },
+          }))
+          print(json.dumps({'rows': len(rows), 'eligible_unique': len(by_formula), 'records': len(records)}, sort_keys=True))
+          PY
+      - name: Audit all PubChemRDF molecular-formula shards
+        run: >-
+          python tools/audit_pubchem_rdf.py
+          --cod-source materials/sources/cod-materials.json
+          --output materials/sources/pubchem-identities.json
+          --requested-material-count 8000
+          --release-date 2026-07-25
+          --shard-count 9
+          --compressed-bytes 803480392
+          --max-scale 16
+          --timeout 240
+          --retries 3
+      - name: Build exact 8000-material catalog
+        run: python tools/build_material_catalog.py --target-count 8000
+      - name: Verify canonical 8000 milestone
+        run: |
+          python tools/build_material_catalog.py --check --target-count 8000
+          python -m pytest -q tests/test_pubchem_rdf_audit.py tests/test_material_catalog_pubchem.py tests/test_material_catalog_8000.py
+      - name: Print audit summary
+        run: |
+          python - <<'PY'
+          import json
+          for path in ('materials/sources/pubchem-identities.json', 'materials/build-audit.json'):
+              data = json.load(open(path, encoding='utf-8'))
+              print(path)
+              for key in ('audited_candidate_formula_count','formula_records_scanned','matched_candidate_formula_count','target_count','selected_count','pubchem_matched_count','pubchem_candidate_match_count'):
+                  if key in data:
+                      print(f'  {key}={data[key]}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: material-catalog-8000-pubchem-rdf
+          path: |
+            materials/sources/cod-materials.json
+            materials/sources/pubchem-identities.json
+            materials/source-manifest.json
+            materials/catalog.json
+            materials/build-audit.json
+          retention-days: 14
