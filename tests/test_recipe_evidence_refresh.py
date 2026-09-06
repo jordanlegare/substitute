@@ -272,3 +272,44 @@ def test_build_frozen_evidence_collapses_duplicate_canonical_evidence_ids():
     assert len(evidence_doc["records"]) == 1
     assert evidence_doc["records"][0]["selection_status"] == "selected"
     assert audit["counts"]["duplicate_evidence_collapses"] == 1
+
+
+def test_build_frozen_evidence_does_not_treat_previous_expansion_as_historical_baseline():
+    records = [
+        _candidate("HfO2", "10.1234/hfo2", grade="R3"),
+        _candidate("ZnO", "10.1234/zno", grade="R3"),
+    ]
+    recipe_catalog = {
+        "entries": [
+            {
+                "recipe_id": "historical-hfo2",
+                "target_formula": "HfO2",
+                "path": "recipes/compounds/oxides/historical_hfo2.json",
+            },
+            {
+                "recipe_id": "exp-zno-old-snapshot",
+                "target_formula": "ZnO",
+                "path": "recipes/compounds/oxides/exp_zno_old_snapshot.json",
+                "recipe_origin": "evidence-expansion",
+                "evidence_record_id": "ev-old",
+                "process_family": "thermal-ald",
+            },
+        ]
+    }
+
+    evidence_doc, _manifest, audit = build_frozen_evidence(
+        records,
+        {"entries": [_material_entry("HfO2"), _material_entry("ZnO")]},
+        recipe_catalog,
+        source_metadata={"transport": "atomiclimits-live-api"},
+    )
+
+    statuses = {
+        (record["target_reduced_formula"], record["selection_status"])
+        for record in evidence_doc["records"]
+    }
+    assert ("HfO2", "covered-existing") in statuses
+    assert ("OZn", "selected") in statuses
+    assert audit["counts"]["existing_recipe_backed_materials"] == 1
+    assert audit["counts"]["new_distinct_materials_selected"] == 1
+    assert audit["counts"]["final_executable_recipe_count"] == 2
