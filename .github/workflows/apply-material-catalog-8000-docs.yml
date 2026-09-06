@@ -32,6 +32,10 @@ jobs:
           grep -n '8,000-material identity catalog' README.md
           grep -n '7,122' README.md docs/material-catalog.md
           grep -n '878' README.md docs/material-catalog.md
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
       - name: Install full test dependencies
         run: python -m pip install -e '.[test,signature]'
       - name: Verify canonical material artifacts
