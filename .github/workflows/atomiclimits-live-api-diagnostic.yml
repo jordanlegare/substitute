@@ -1,0 +1,64 @@
+name: AtomicLimits live API diagnostic
+
+on:
+  pull_request:
+    branches:
+      - feature/recipe-evidence-expansion
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Inspect live app assets for structured data endpoints
+        run: |
+          python - <<'PY'
+          import re
+          import urllib.parse
+          import urllib.request
+
+          base = 'https://www.atomiclimits.com/alddatabase/'
+          req = urllib.request.Request(base, headers={'User-Agent': 'Substitute-evidence-audit/1.0'})
+          html = urllib.request.urlopen(req, timeout=30).read().decode('utf-8', 'replace')
+          print('HTML_BYTES', len(html.encode('utf-8')))
+          scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)', html, re.I)
+          print('SCRIPT_COUNT', len(scripts))
+          for src in scripts:
+              print('SCRIPT', urllib.parse.urljoin(base, src))
+
+          patterns = [
+              r'https?://[^"\'\s)]+',
+              r'[/][A-Za-z0-9_.-]*(?:api|process|material|precursor)[A-Za-z0-9_./?=&%-]*',
+          ]
+          interesting = set()
+          for src in scripts:
+              url = urllib.parse.urljoin(base, src)
+              if not url.startswith('https://www.atomiclimits.com/'):
+                  continue
+              try:
+                  req = urllib.request.Request(url, headers={'User-Agent': 'Substitute-evidence-audit/1.0'})
+                  text = urllib.request.urlopen(req, timeout=30).read().decode('utf-8', 'replace')
+              except Exception as error:
+                  print('SCRIPT_ERROR', url, type(error).__name__, error)
+                  continue
+              print('SCRIPT_BYTES', len(text.encode('utf-8')), url)
+              lower = text.casefold()
+              for match in re.finditer(r'.{0,140}(?:fetch\(|axios|graphql|api/|/api|processes|precursors|materials).{0,220}', text, re.I | re.S):
+                  snippet = re.sub(r'\s+', ' ', match.group(0))
+                  if len(snippet) <= 500:
+                      interesting.add(snippet)
+              for pattern in patterns:
+                  for value in re.findall(pattern, text, re.I):
+                      if isinstance(value, tuple):
+                          value = ''.join(value)
+                      value = str(value)
+                      folded = value.casefold()
+                      if any(token in folded for token in ('api', 'process', 'material', 'precursor', 'atomiclimits')):
+                          interesting.add(value[:500])
+          print('INTERESTING_COUNT', len(interesting))
+          for item in sorted(interesting)[:250]:
+              print('INTERESTING', item)
+          PY
