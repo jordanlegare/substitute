@@ -6,18 +6,51 @@ on:
       - automation/material-catalog-finalize
 
 permissions:
-  contents: read
+  contents: write
+  actions: read
 
 jobs:
-  red:
+  finalize:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feature/material-catalog-1000
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/material-catalog-finalize
+          path: .helper
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: python -m pip install -e '.[test]'
-      - name: Canonical catalog acceptance RED
-        run: python -m pytest -q tests/test_material_catalog_real.py
+          python-version: '3.11'
+      - name: Download audited material artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: material-catalog-cod-only
+          path: materials
+          repository: jordanlegare/substitute
+          run-id: 34008394711
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Patch README and CLI reference
+        run: python .helper/.github/scripts/finalize_material_catalog.py
+      - name: Install full test dependencies
+        run: python -m pip install -e '.[test,signature]'
+      - name: Verify canonical material artifacts
+        run: |
+          python tools/build_material_catalog.py --check --target-count 1000
+          python -m pytest -q tests/test_material_catalog.py tests/test_material_catalog_ranking.py tests/test_material_catalog_real.py tests/test_material_cli.py tests/test_ald_master_compatibility.py
+      - name: Full repository tests
+        run: python -m pytest -q
+      - name: Compile material and master modules
+        run: python -m py_compile ald_materials.py ald_master.py ald_master/__init__.py tools/build_material_catalog.py tools/refresh_material_sources.py
+      - name: Commit final material catalog
+        run: |
+          rm -rf .helper
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md ald_master/__init__.py materials docs/material-catalog.md
+          git diff --cached --check
+          git commit -m "feat: add 1000 real material identities"
+          git push origin HEAD:feature/material-catalog-1000
