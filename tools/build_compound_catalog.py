@@ -30,6 +30,7 @@ CATEGORY_DIRS = (
     "molecular_layer_deposition",
     "research",
 )
+PROCESS_FAMILIES = {"thermal-ald", "plasma-ald", "mld", "hybrid"}
 
 
 def _thaw(value: Any) -> Any:
@@ -94,7 +95,7 @@ def _entry(path: Path, recipe: core.Recipe) -> dict[str, object]:
     if len(set(precursor_names)) != len(precursor_names):
         raise ValueError(f"{path}: precursor chemical names must be unique")
 
-    return {
+    result: dict[str, object] = {
         "category": category,
         "chemistry_family": normalized_strings["chemistry_family"],
         "chemistry_status": normalized_strings["chemistry_status"],
@@ -116,6 +117,26 @@ def _entry(path: Path, recipe: core.Recipe) -> dict[str, object]:
         "target_material": normalized_strings["target_material"],
         "exposure_signature": _deposition_signature(recipe, path),
     }
+
+    origin = metadata.get("recipe_origin")
+    if origin is not None:
+        if origin != "evidence-expansion":
+            raise ValueError(f"{path}: unsupported metadata.recipe_origin {origin!r}")
+        evidence_record_id = metadata.get("evidence_record_id")
+        process_family = metadata.get("process_family")
+        if type(evidence_record_id) is not str or not evidence_record_id:
+            raise ValueError(f"{path}: evidence-expansion recipe requires evidence_record_id")
+        if process_family not in PROCESS_FAMILIES:
+            raise ValueError(f"{path}: invalid evidence-expansion process_family {process_family!r}")
+        result.update(
+            {
+                "recipe_origin": "evidence-expansion",
+                "evidence_record_id": evidence_record_id,
+                "process_family": process_family,
+            }
+        )
+
+    return result
 
 
 def iter_recipe_paths(root: Path = CATALOG_ROOT):
