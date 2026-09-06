@@ -196,6 +196,12 @@ def build_pubchem_formula_variant_index(
 
 def normalize_pubchem_primary_formula(formula: str) -> str | None:
     """Return a conservative fixed-inorganic reduced formula for catalog supplementation."""
+    # PubChem molecular formulas use Hill ordering. Carbon-bearing formulas therefore
+    # overwhelmingly begin with a carbon token; reject those before full parsing while
+    # preserving element symbols such as Ca, Cd, Ce, Cl, Co, Cr, Cs, and Cu. Apply the
+    # same safe fast path to a leading hydrogen token while preserving Hf, Hg, and Ho.
+    if formula and formula[0] in {"C", "H"} and (len(formula) == 1 or not formula[1].islower()):
+        return None
     try:
         reduced, elements = materials.reduce_formula(formula)
         counts = materials.parse_formula(reduced)
