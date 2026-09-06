@@ -19,18 +19,26 @@ def test_checked_in_catalog_has_exactly_8000_materials():
     assert len({entry["reduced_formula"] for entry in entries}) == 8000
 
 
-def test_all_8000_materials_are_audited_against_pubchem_bulk_mirror():
+def test_all_8000_materials_have_exact_pubchem_bulk_formula_matches():
     entries = materials.load_material_catalog(CATALOG)
-    assert all(entry["provenance"]["pubchem_audit"]["status"] in {"matched", "no_exact_formula_match"} for entry in entries)
-    assert all(entry["provenance"]["pubchem_audit"]["mirror"] == "PubChemRDF" for entry in entries)
+    assert all(entry["pubchem_audit"]["status"] == "matched" for entry in entries)
+    assert all(entry["pubchem_audit"]["mirror"] == "PubChemRDF" for entry in entries)
+    assert all(entry["pubchem_audit"]["release_date"] for entry in entries)
+    assert all(entry["pubchem_audit"]["cids"] for entry in entries)
 
 
-def test_pubchem_identity_snapshot_is_bulk_audit_not_per_formula_api_cache():
+def test_pubchem_identity_snapshot_is_full_bulk_audit_not_per_formula_api_cache():
     payload = json.loads(PUBCHEM.read_text(encoding="utf-8"))
+    assert payload["schema"] == "ald-material-pubchem-rdf-audit/1"
     assert payload["audit_mode"] == "bulk-mirror"
     assert payload["mirror"] == "PubChemRDF"
-    assert payload["target_formula_count"] == 8000
+    assert payload["requested_material_count"] == 8000
+    assert payload["audited_candidate_formula_count"] >= 8000
+    assert payload["matched_candidate_formula_count"] >= 8000
     assert payload["formula_records_scanned"] > 1_000_000
+    assert payload["mirror_release_date"]
+    assert payload["shard_count"] == 9
+    assert payload["compressed_bytes"] == 803_480_392
 
 
 def test_manifest_and_build_audit_record_8000_pubchem_milestone():
@@ -38,6 +46,8 @@ def test_manifest_and_build_audit_record_8000_pubchem_milestone():
     audit = json.loads(AUDIT.read_text(encoding="utf-8"))
     assert manifest["target_count"] == 8000
     assert manifest["source_metadata"]["pubchem"]["audit_mode"] == "bulk-mirror"
+    assert manifest["source_metadata"]["pubchem"]["mirror"] == "PubChemRDF"
     assert audit["target_count"] == 8000
     assert audit["selected_count"] == 8000
-    assert audit["pubchem_audited_count"] == 8000
+    assert audit["pubchem_matched_count"] == 8000
+    assert audit["pubchem_candidate_match_count"] >= 8000
