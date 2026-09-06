@@ -59,6 +59,36 @@ def test_fast_binary_scan_counts_all_formula_records_and_matches_variants():
     assert result["matched"] == {"HfO2": ["10"], "O2Ti": ["20"]}
 
 
+def test_pubchem_primary_formula_filter_keeps_simple_material_like_inorganics():
+    normalize = getattr(refresh, "normalize_pubchem_primary_formula", None)
+    assert callable(normalize)
+    assert normalize("GaSb") == "GaSb"
+    assert normalize("NaCl") == "ClNa"
+    assert normalize("Na2O") == "Na2O"
+    assert normalize("CCl4") is None
+    assert normalize("H2O") is None
+    assert normalize("KrF2") is None
+    assert normalize("Na13Cl") is None
+
+
+def test_fast_binary_scan_collects_bounded_pubchem_primary_supplements():
+    scan = getattr(refresh, "audit_pubchem_rdf_binary_lines", None)
+    assert callable(scan)
+    variants = refresh.build_pubchem_formula_variant_index({"HfO2"}, max_scale=3)
+    lines = [
+        b'compound:CID1\tvocab:molecular_formula\t"Hf2O4" .\n',
+        b'compound:CID2\tvocab:molecular_formula\t"CCl4" .\n',
+        b'compound:CID3\tvocab:molecular_formula\t"H2O" .\n',
+        b'compound:CID4\tvocab:molecular_formula\t"GaSb" .\n',
+        b'compound:CID5\tvocab:molecular_formula\t"NaCl" .\n',
+        b'compound:CID6\tvocab:molecular_formula\t"Na2O" .\n',
+    ]
+    result = scan(lines, variants, supplemental_limit=2)
+    assert result["formula_records_scanned"] == 6
+    assert result["matched"] == {"HfO2": ["1"]}
+    assert result["supplemental"] == {"ClNa": ["5"], "GaSb": ["4"]}
+
+
 def test_pubchem_audit_script_runs_directly_from_repository_root():
     script = Path("tools/audit_pubchem_rdf.py")
     result = subprocess.run(
