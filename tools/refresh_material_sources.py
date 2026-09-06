@@ -27,6 +27,7 @@ USER_AGENT = "Substitute-material-catalog/1"
 _PUBCHEM_RDF_FORMULA_RE = re.compile(
     r'^compound:CID([0-9]+)\s+vocab:molecular_formula\s+"([^"]+)"\s+\.\s*$'
 )
+_PUBCHEM_RDF_BINARY_SEPARATOR = b"\tvocab:molecular_formula\t"
 
 
 def _text(value: Any) -> str | None:
@@ -186,6 +187,43 @@ def build_pubchem_formula_variant_index(
             if current is None or reduced < current:
                 result[raw] = reduced
     return result
+
+
+def audit_pubchem_rdf_binary_lines(
+    lines: Iterable[bytes], formula_variants: Mapping[str, str]
+) -> dict[str, Any]:
+    """Scan PubChemRDF formula triples without parsing every formula chemically."""
+    matched_sets: dict[str, set[str]] = {}
+    formula_records_scanned = 0
+    for line in lines:
+        if not line.startswith(b"compound:CID"):
+            continue
+        try:
+            subject, value = line.rstrip().split(_PUBCHEM_RDF_BINARY_SEPARATOR, 1)
+        except ValueError:
+            continue
+        if not subject.startswith(b"compound:CID"):
+            continue
+        formula_records_scanned += 1
+        first_quote = value.find(b'"')
+        last_quote = value.rfind(b'"')
+        if first_quote < 0 or last_quote <= first_quote:
+            continue
+        try:
+            cid = subject[len(b"compound:CID") :].decode("ascii")
+            formula = value[first_quote + 1 : last_quote].decode("ascii")
+        except UnicodeDecodeError:
+            continue
+        reduced = formula_variants.get(formula)
+        if reduced is not None:
+            matched_sets.setdefault(reduced, set()).add(cid)
+    return {
+        "formula_records_scanned": formula_records_scanned,
+        "matched": {
+            formula: sorted(cids, key=lambda value: int(value))
+            for formula, cids in sorted(matched_sets.items())
+        },
+    }
 
 
 def _load_or_fetch_json(url: str, *, cache_path: Path | None, timeout: float, retries: int) -> Any:
