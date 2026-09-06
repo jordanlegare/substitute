@@ -17,6 +17,7 @@ from typing import Any, Sequence
 
 import ald_compatibility as compatibility
 import ald_materials as material_catalog
+import ald_chemistry as chemistry_catalog
 
 
 _CORE_PATH = Path(__file__).resolve().parent.parent / "ald_master.py"
@@ -36,6 +37,7 @@ DEFAULT_COMPAT_MODEL = Path("compatibility/model-v1.json")
 DEFAULT_COMPAT_EVIDENCE = Path("compatibility/evidence-overrides.json")
 DEFAULT_COMPAT_SNAPSHOT = Path("build/compatibility/snapshot.json")
 DEFAULT_MATERIAL_CATALOG = material_catalog.DEFAULT_MATERIAL_CATALOG
+DEFAULT_RECIPE_EVIDENCE = chemistry_catalog.DEFAULT_RECIPE_EVIDENCE
 EVIDENCE_LEVELS = (
     "E0_UNKNOWN",
     "E1_HEURISTIC",
@@ -132,6 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MATERIAL_CATALOG,
         help="offline material identity catalog",
     )
+    parser.add_argument(
+        "--recipe-evidence",
+        type=Path,
+        default=DEFAULT_RECIPE_EVIDENCE,
+        help="offline recipe chemistry evidence ledger",
+    )
     commands = _subparser_action(parser)
 
     materials_command = commands.add_parser(
@@ -157,6 +165,41 @@ def build_parser() -> argparse.ArgumentParser:
 
     material_report_parser = material_actions.add_parser("report")
     _add_json_flag(material_report_parser)
+
+    chemistry_command = commands.add_parser(
+        "chemistry", help="explore recipe chemistry and publication provenance"
+    )
+    chemistry_actions = chemistry_command.add_subparsers(
+        dest="chemistry_action", required=True
+    )
+
+    chemistry_search = chemistry_actions.add_parser("search")
+    chemistry_search.add_argument("text")
+    chemistry_search.add_argument("--limit", type=int, default=20)
+    _add_json_flag(chemistry_search)
+
+    chemistry_show = chemistry_actions.add_parser("show")
+    chemistry_show.add_argument("chemistry")
+    _add_json_flag(chemistry_show)
+
+    chemistry_list = chemistry_actions.add_parser("list")
+    chemistry_list.add_argument(
+        "--process-family", choices=("thermal-ald", "plasma-ald", "mld", "hybrid")
+    )
+    chemistry_list.add_argument("--chemistry-family")
+    chemistry_list.add_argument("--element")
+    chemistry_list.add_argument("--precursor")
+    chemistry_list.add_argument("--evidence", choices=("R2", "R3", "historical"))
+    chemistry_list.add_argument("--origin", choices=("historical", "expansion"))
+    chemistry_list.add_argument("--limit", type=int, default=50)
+    _add_json_flag(chemistry_list)
+
+    chemistry_sources = chemistry_actions.add_parser("sources")
+    chemistry_sources.add_argument("chemistry")
+    _add_json_flag(chemistry_sources)
+
+    chemistry_report_parser = chemistry_actions.add_parser("report")
+    _add_json_flag(chemistry_report_parser)
 
     build = commands.add_parser(
         "compatibility-build",
@@ -405,6 +448,149 @@ def _print_material(entry: dict[str, Any]) -> None:
     recipe_ids = process.get("recipe_ids", []) if isinstance(process, dict) else []
     if recipe_ids:
         print(f"  executable recipes: {', '.join(str(value) for value in recipe_ids)}")
+        first_recipe = str(recipe_ids[0])
+        print(f"  explore chemistry: ald-master chemistry show {first_recipe}")
+
+
+def _load_chemistry_entries(args: argparse.Namespace) -> list[dict[str, Any]]:
+    return chemistry_catalog.load_chemistry_catalog(
+        Path(args.catalog),
+        Path(getattr(args, "recipe_evidence", DEFAULT_RECIPE_EVIDENCE)),
+        Path(getattr(args, "materials_catalog", DEFAULT_MATERIAL_CATALOG)),
+    )
+
+
+def _chemistry_label(entry: dict[str, Any]) -> str:
+    formula = str(entry.get("target_formula", "")).strip()
+    name = str(entry.get("target_material", "")).strip()
+    recipe_id = str(entry.get("recipe_id", "")).strip()
+    target = f"{formula} ({name})" if formula and name and formula.casefold() != name.casefold() else formula or name
+    return f"{target} — {recipe_id}"
+
+
+def _print_chemistry_list(entries: list[dict[str, Any]]) -> None:
+    if not entries:
+        print("No recipe chemistries match the requested query.")
+        return
+    for index, entry in enumerate(entries, start=1):
+        family = entry.get("process_family") or "unspecified"
+        print(
+            f"{index:>3}. {_chemistry_label(entry)}  "
+            f"[{entry.get('origin')}; {entry.get('evidence_grade')}; {family}]"
+        )
+
+
+def _print_chemistry(entry: dict[str, Any]) -> None:
+    print(_chemistry_label(entry))
+    print(f"  chemistry id: {entry.get('chemistry_id')}")
+    print(f"  origin: {entry.get('origin')}")
+    print(f"  process family: {entry.get('process_family') or 'unspecified'}")
+    print(f"  chemistry family: {entry.get('chemistry_family')}")
+    print(f"  evidence: {entry.get('evidence_grade')}")
+    print(f"  recipe path: {entry.get('recipe_path')}")
+    print("  reactants:")
+    for reactant in entry.get("reactants", []):
+        if not isinstance(reactant, dict):
+            continue
+        label = reactant.get("label") or reactant.get("formula") or reactant.get("name")
+        role = reactant.get("role", "reactant")
+        name = reactant.get("name")
+        formula = reactant.get("formula")
+        details = []
+        if name and str(name) != str(label):
+            details.append(str(name))
+        if formula and str(formula) != str(label):
+            details.append(str(formula))
+        suffix = f" ({', '.join(details)})" if details else ""
+        print(f"    - {role}: {label}{suffix}")
+    sources = entry.get("sources", [])
+    if sources:
+        print("  sources:")
+        for source in sources:
+            if isinstance(source, dict):
+                print(f"    - {source.get('type', '?')}:{source.get('identifier', '?')}")
+    formula = str(entry.get("target_formula", "")).strip()
+    if formula:
+        print(f"  material: ald-master materials show {formula}")
+    print(
+        "  boundary: literature-recognition chemistry for simulation only; "
+        "simulator execution values are synthetic and are not shown here"
+    )
+
+
+def _dispatch_chemistry(args: argparse.Namespace) -> int:
+    entries = _load_chemistry_entries(args)
+    action = args.chemistry_action
+    if action == "search":
+        result = chemistry_catalog.search_chemistries(entries, args.text, limit=args.limit)
+        if args.json:
+            _json_print(result)
+        else:
+            _print_chemistry_list(result)
+        return 0 if result else 1
+    if action == "show":
+        result = chemistry_catalog.resolve_chemistries(entries, args.chemistry)
+        if args.json:
+            _json_print(result)
+        else:
+            for index, entry in enumerate(result):
+                if index:
+                    print()
+                _print_chemistry(entry)
+        return 0
+    if action == "list":
+        result = chemistry_catalog.filter_chemistries(
+            entries,
+            process_family=args.process_family,
+            chemistry_family=args.chemistry_family,
+            element=args.element,
+            precursor=args.precursor,
+            evidence=args.evidence,
+            origin=args.origin,
+            limit=args.limit,
+        )
+        if args.json:
+            _json_print(result)
+        else:
+            _print_chemistry_list(result)
+        return 0 if result else 1
+    if action == "sources":
+        result = chemistry_catalog.chemistry_sources(entries, args.chemistry)
+        if args.json:
+            _json_print(result)
+        else:
+            if not result:
+                print("No publication sources are recorded for this chemistry.")
+            for source in result:
+                text = f"{source.get('type', '?')}:{source.get('identifier', '?')}"
+                title = str(source.get("title", "")).strip()
+                year = source.get("year")
+                journal = str(source.get("journal", "")).strip()
+                detail = "; ".join(
+                    value for value in (title, str(year) if year else "", journal) if value
+                )
+                print(f"{text}{' — ' + detail if detail else ''}")
+        return 0
+    material_entries = _load_material_entries(args)
+    material_count = len(material_entries)
+    material_summary = material_catalog.material_report(material_entries)
+    result = chemistry_catalog.chemistry_report(
+        entries,
+        material_count=material_count,
+        recipe_backed_material_count=int(material_summary["recipe_linked_materials"]),
+    )
+    if args.json:
+        _json_print(result)
+    else:
+        print("Recipe chemistry report")
+        print(f"  executable recipes: {result['total_executable_recipes']}")
+        print(f"  unique recipe-backed materials: {result['unique_recipe_backed_materials']}")
+        print(f"  historical recipes: {result['historical_recipe_count']}")
+        print(f"  expansion recipes: {result['expansion_recipe_count']}")
+        print(f"  process families: {result['process_families']}")
+        print(f"  evidence grades: {result['evidence_grades']}")
+        print(f"  remaining identity-only materials: {result['remaining_identity_only_materials']}")
+    return 0
 
 
 def _dispatch_materials(args: argparse.Namespace) -> int:
@@ -748,6 +934,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_flag_mode(args)
         if args.command == "materials":
             return _dispatch_materials(args)
+        if args.command == "chemistry":
+            return _dispatch_chemistry(args)
         if args.command == "compatibility-build":
             return _dispatch_build(args)
         if args.command == "compatible":

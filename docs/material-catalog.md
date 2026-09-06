@@ -7,6 +7,8 @@ Substitute maintains two deliberately separate catalogs:
 
 A material appearing in `materials/catalog.json` is **not** a claim that Substitute has a validated ALD/MLD process for it. Most entries are identity-only. Only records whose `process_evidence.status` is `executable-recipe` link to checked-in Substitute recipe IDs and paths.
 
+The current frozen recipe-evidence expansion provides exact executable-recipe links for **186 distinct material identities**: 36 historical recipe-backed identities plus 150 newly selected direct-evidence targets. **7,814 of the 8,000 identities remain identity-only.** These counts describe evidence coverage, not chemical safety or fabrication readiness. See [`recipe-chemistry.md`](recipe-chemistry.md) for the chemistry/provenance view.
+
 ## Scientific boundary
 
 The material catalog stores identity and high-level materials metadata only:

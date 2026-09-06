@@ -57,6 +57,21 @@ python tools/build_material_catalog.py --check --target-count 8000
 
 See [`docs/material-catalog.md`](docs/material-catalog.md) for provenance, counting rules, offline rebuilds, CLI details, and the identity/process-evidence boundary.
 
+## Recipe chemistry evidence
+
+The current frozen evidence sweep expands the executable catalog to **250 recipes**. It selects one best direct-evidence chemistry for **150 newly supported distinct materials**, taking exact recipe-backed material coverage to **186 of 8,000 identities** and leaving **7,814 identity-only**. The expansion is chemistry/provenance evidence only: generated execution values remain a fixed synthetic simulator template with no physical fabrication mapping.
+
+Explore the safe chemistry projection with:
+
+```bash
+ald-master chemistry search HfO2
+ald-master chemistry show HfO2
+ald-master chemistry sources HfO2
+ald-master chemistry report
+```
+
+See [`docs/recipe-chemistry.md`](docs/recipe-chemistry.md) for evidence grading, source provenance, coverage, rebuild checks, and the simulation/fabrication boundary.
+
 ## Compatibility evidence engine
 
 `ald-master` adds an offline, deterministic evidence graph over the compound catalog. It exhaustively records every unique precursor pair and every directed base-material interface, preserves score/coverage/evidence provenance separately, and ranks bounded 2–6 precursor candidate sets with deterministic beam search.
