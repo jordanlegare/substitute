@@ -25,6 +25,13 @@ def test_all_8000_materials_have_exact_pubchem_bulk_formula_matches():
     assert all(entry["pubchem_audit"]["mirror"] == "PubChemRDF" for entry in entries)
     assert all(entry["pubchem_audit"]["release_date"] for entry in entries)
     assert all(entry["pubchem_audit"]["cids"] for entry in entries)
+    provenance_sources = {
+        item["source"]
+        for entry in entries
+        for item in entry["provenance"]
+    }
+    assert "cod" in provenance_sources
+    assert "pubchem" in provenance_sources
 
 
 def test_pubchem_identity_snapshot_is_full_bulk_audit_not_per_formula_api_cache():
@@ -32,9 +39,12 @@ def test_pubchem_identity_snapshot_is_full_bulk_audit_not_per_formula_api_cache(
     assert payload["schema"] == "ald-material-pubchem-rdf-audit/1"
     assert payload["audit_mode"] == "bulk-mirror"
     assert payload["mirror"] == "PubChemRDF"
+    assert payload["selection_mode"] == "cod-plus-pubchem-primary"
     assert payload["requested_material_count"] == 8000
     assert payload["audited_candidate_formula_count"] >= 8000
-    assert payload["matched_candidate_formula_count"] >= 8000
+    assert payload["matched_candidate_formula_count"] > 0
+    assert payload["supplemental_formula_count"] > 0
+    assert payload["eligible_formula_count"] >= 8000
     assert payload["formula_records_scanned"] > 1_000_000
     assert payload["mirror_release_date"]
     assert payload["shard_count"] == 9
@@ -47,7 +57,11 @@ def test_manifest_and_build_audit_record_8000_pubchem_milestone():
     assert manifest["target_count"] == 8000
     assert manifest["source_metadata"]["pubchem"]["audit_mode"] == "bulk-mirror"
     assert manifest["source_metadata"]["pubchem"]["mirror"] == "PubChemRDF"
+    assert manifest["source_metadata"]["pubchem"]["selection_mode"] == "cod-plus-pubchem-primary"
     assert audit["target_count"] == 8000
     assert audit["selected_count"] == 8000
     assert audit["pubchem_matched_count"] == 8000
     assert audit["pubchem_candidate_match_count"] >= 8000
+    assert audit["cod_backed_selected_count"] > 0
+    assert audit["pubchem_primary_selected_count"] > 0
+    assert audit["cod_backed_selected_count"] + audit["pubchem_primary_selected_count"] == 8000
