@@ -49,9 +49,23 @@ def test_checked_in_material_catalog_has_exactly_8000_real_counted_formulas():
     assert len({entry["material_id"] for entry in counted}) == 8000
     assert all(len(entry["elements"]) >= 2 for entry in counted)
     assert all(entry["provenance"] for entry in counted)
-    assert all(entry.get("identifiers", {}).get("cod_ids") for entry in counted)
+    assert all(entry.get("identifiers", {}).get("pubchem_cid") for entry in counted)
     assert all(entry.get("pubchem_audit", {}).get("status") == "matched" for entry in counted)
     assert all(materials.reduce_formula(entry["formula"])[0] == entry["reduced_formula"] for entry in counted)
+
+    provenance_sources = {
+        item["source"]
+        for entry in counted
+        for item in entry["provenance"]
+    }
+    assert provenance_sources <= {"cod", "pubchem"}
+    assert "cod" in provenance_sources
+    assert "pubchem" in provenance_sources
+    assert all(
+        entry.get("identifiers", {}).get("cod_ids")
+        or any(item.get("source") == "pubchem" for item in entry["provenance"])
+        for entry in counted
+    )
 
 
 def test_checked_in_catalog_contains_common_thin_film_reference_materials():
@@ -101,8 +115,12 @@ def test_material_catalog_audit_and_manifest_match_milestone():
     assert audit["selected_count"] == 8000
     assert audit["pubchem_matched_count"] == 8000
     assert audit["pubchem_candidate_match_count"] >= 8000
+    assert audit["cod_backed_selected_count"] > 0
+    assert audit["pubchem_primary_selected_count"] > 0
+    assert audit["cod_backed_selected_count"] + audit["pubchem_primary_selected_count"] == 8000
     assert manifest["target_count"] == 8000
-    assert manifest["selection_policy_version"] == "materials-8000-pubchem-rdf-v1"
+    assert manifest["selection_policy_version"] == "materials-8000-pubchem-rdf-v2"
     assert manifest["source_metadata"]["pubchem"]["audit_mode"] == "bulk-mirror"
+    assert manifest["source_metadata"]["pubchem"]["selection_mode"] == "cod-plus-pubchem-primary"
     assert COD_SOURCE.exists()
     assert PUBCHEM_SOURCE.exists()
