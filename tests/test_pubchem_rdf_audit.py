@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+import subprocess
+import sys
+
 from tools import refresh_material_sources as refresh
 
 
@@ -53,3 +57,16 @@ def test_fast_binary_scan_counts_all_formula_records_and_matches_variants():
     result = scan(lines, variants)
     assert result["formula_records_scanned"] == 3
     assert result["matched"] == {"HfO2": ["10"], "O2Ti": ["20"]}
+
+
+def test_pubchem_audit_script_runs_directly_from_repository_root():
+    script = Path("tools/audit_pubchem_rdf.py")
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "Audit frozen material candidates" in result.stdout
