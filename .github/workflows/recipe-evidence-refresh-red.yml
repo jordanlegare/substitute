@@ -1,9 +1,9 @@
 name: Recipe evidence refresh RED
 
 on:
-  push:
+  pull_request:
     branches:
-      - automation/recipe-evidence-refresh-red
+      - feature/recipe-evidence-expansion
 
 jobs:
   refresh-red:
