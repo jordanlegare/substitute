@@ -16,7 +16,7 @@ jobs:
           python-version: "3.11"
       - name: Install
         run: python -m pip install -e '.[test,signature]'
-      - name: Focused evidence tests
+      - name: Focused evidence and chemistry tests
         run: |
           python -m pytest \
             tests/test_recipe_evidence.py \
