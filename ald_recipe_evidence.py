@@ -125,22 +125,48 @@ def _required_text(value: object, field: str) -> str:
     return value.strip()
 
 
+def _optional_text(value: object) -> str | None:
+    if type(value) is str and value.strip():
+        return value.strip()
+    return None
+
+
 def normalize_reactants(raw: Sequence[Mapping[str, object]]) -> list[dict[str, str]]:
+    """Normalize explicit reactant identities without inventing canonical chemistry.
+
+    ``label`` is the required identity token exactly as represented by the process
+    evidence source. ``name`` and ``formula`` are optional enrichments and are
+    preserved only when a source resolves them explicitly.
+    """
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)) or not raw:
         raise ValueError("reactants must be a non-empty array")
     reactants: list[dict[str, str]] = []
     for index, item in enumerate(raw):
         if not isinstance(item, Mapping):
             raise ValueError(f"reactants[{index}] must be an object")
-        name = _required_text(item.get("name"), f"reactants[{index}].name")
-        formula = _required_text(item.get("formula"), f"reactants[{index}].formula")
+        label = _optional_text(item.get("label"))
+        # Backward-compatible evidence authored before source-label support can use
+        # an explicit name or formula as the source identity when both agree on a
+        # real, non-empty identifier. This is not a chemical inference.
+        if label is None:
+            label = _optional_text(item.get("formula")) or _optional_text(item.get("name"))
+        if label is None:
+            raise ValueError(f"reactants[{index}].label must be a non-empty string")
         role = _required_text(item.get("role"), f"reactants[{index}].role")
-        reactants.append({"name": name, "formula": formula, "role": role})
+        normalized = {"label": label, "role": role}
+        name = _optional_text(item.get("name"))
+        formula = _optional_text(item.get("formula"))
+        if name is not None:
+            normalized["name"] = name
+        if formula is not None:
+            normalized["formula"] = formula
+        reactants.append(normalized)
     reactants.sort(
         key=lambda item: (
             item["role"].casefold(),
-            item["formula"].casefold(),
-            item["name"].casefold(),
+            item["label"].casefold(),
+            item.get("formula", "").casefold(),
+            item.get("name", "").casefold(),
         )
     )
     return reactants
@@ -155,7 +181,14 @@ def chemistry_key(
     family = normalize_process_family(process_family)
     normalized = normalize_reactants(reactants)
     parts = [
-        f"{item['role'].casefold()}:{item['formula'].casefold()}:{item['name'].casefold()}"
+        ":".join(
+            (
+                item["role"].casefold(),
+                item["label"].casefold(),
+                item.get("formula", "").casefold(),
+                item.get("name", "").casefold(),
+            )
+        )
         for item in normalized
     ]
     return "|".join([target, family, *parts])
@@ -272,7 +305,9 @@ def validate_evidence_record(record: Mapping[str, object]) -> dict[str, object]:
         "discovery_sources": discovery_sources,
         "evidence_grade": grade,
         "selection_status": status,
-        "reactant_identities_complete": True,
+        "reactant_identities_complete": all(
+            bool(str(item.get("label", "")).strip()) for item in reactants
+        ),
         "independent_direct_publication_count": len(direct_identifiers),
         "stable_publication_identifier_count": len(
             {(str(item["type"]), str(item["identifier"])) for item in publications}
