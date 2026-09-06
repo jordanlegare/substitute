@@ -21,6 +21,7 @@ jobs:
           python -m pytest \
             tests/test_recipe_evidence.py \
             tests/test_recipe_evidence_refresh.py \
+            tests/test_recipe_evidence_live_refresh.py \
             tests/test_recipe_evidence_audit.py \
             tests/test_recipe_expansion.py \
             tests/test_compound_catalog.py \
