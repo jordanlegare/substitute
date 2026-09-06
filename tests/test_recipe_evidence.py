@@ -6,6 +6,8 @@ from ald_recipe_evidence import (
     chemistry_key,
     normalize_doi,
     normalize_process_family,
+    select_best_candidates,
+    selection_sort_key,
     validate_evidence_record,
 )
 
@@ -92,3 +94,58 @@ def test_validation_rejects_r2_without_direct_publication():
     )
     with pytest.raises(ValueError, match="direct publication"):
         validate_evidence_record(record)
+
+
+def test_selection_sort_key_prefers_r3_over_r2():
+    r2 = validate_evidence_record(direct_record(evidence_grade="R2"))
+    r3 = validate_evidence_record(
+        direct_record(
+            evidence_grade="R3",
+            publications=[
+                {"type": "doi", "identifier": "10.1234/a", "direct": True},
+                {"type": "doi", "identifier": "10.1234/b", "direct": True},
+            ],
+        )
+    )
+    assert selection_sort_key(r3) < selection_sort_key(r2)
+
+
+def test_select_best_candidates_selects_one_best_r3_per_new_target():
+    r2 = direct_record(
+        target_material="titanium nitride",
+        target_formula="TiN",
+        evidence_grade="R2",
+        publications=[{"type": "doi", "identifier": "10.1234/tin-r2", "direct": True}],
+    )
+    r3 = direct_record(
+        target_material="titanium nitride",
+        target_formula="TiN",
+        evidence_grade="R3",
+        publications=[
+            {"type": "doi", "identifier": "10.1234/tin-r3a", "direct": True},
+            {"type": "doi", "identifier": "10.1234/tin-r3b", "direct": True},
+        ],
+    )
+
+    selected = select_best_candidates([r2, r3], existing_target_formulas=set())
+    winners = [item for item in selected if item["selection_status"] == "selected"]
+    losers = [item for item in selected if item["selection_status"] == "rejected"]
+
+    assert len(winners) == 1
+    assert winners[0]["evidence_grade"] == "R3"
+    assert len(losers) == 1
+    assert losers[0]["rejection_reason"] == "not-best-chemistry"
+
+
+def test_select_best_candidates_never_selects_r1():
+    record = direct_record(evidence_grade="R1")
+    result = select_best_candidates([record], existing_target_formulas=set())
+    assert result[0]["selection_status"] == "rejected"
+    assert result[0]["rejection_reason"] == "insufficient-evidence"
+
+
+def test_select_best_candidates_preserves_existing_target_without_new_recipe():
+    record = direct_record()
+    result = select_best_candidates([record], existing_target_formulas={"HfO2"})
+    assert result[0]["selection_status"] == "covered-existing"
+    assert result[0]["rejection_reason"] == "already-recipe-backed"
