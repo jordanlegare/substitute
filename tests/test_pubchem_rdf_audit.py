@@ -38,3 +38,18 @@ def test_pubchem_rdf_variant_index_supports_formula_unit_multiples():
     assert index["Hf3O6"] == "HfO2"
     assert index["O2Ti"] == "O2Ti"
     assert index["O4Ti2"] == "O2Ti"
+
+
+def test_fast_binary_scan_counts_all_formula_records_and_matches_variants():
+    scan = getattr(refresh, "audit_pubchem_rdf_binary_lines", None)
+    assert callable(scan)
+    variants = refresh.build_pubchem_formula_variant_index({"HfO2", "TiO2"}, max_scale=3)
+    lines = [
+        b'@prefix vocab:\t<http://rdf.ncbi.nlm.nih.gov/pubchem/vocabulary#> .\n',
+        b'compound:CID10\tvocab:molecular_formula\t"Hf2O4" .\n',
+        b'compound:CID20\tvocab:molecular_formula\t"O2Ti" .\n',
+        b'compound:CID30\tvocab:molecular_formula\t"C2H6O" .\n',
+    ]
+    result = scan(lines, variants)
+    assert result["formula_records_scanned"] == 3
+    assert result["matched"] == {"HfO2": ["10"], "O2Ti": ["20"]}
