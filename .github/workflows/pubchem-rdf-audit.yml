@@ -1,0 +1,31 @@
+name: PubChemRDF audit probe
+
+on:
+  push:
+    branches:
+      - automation/pubchem-rdf-audit
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect formula shards
+        run: |
+          set -euo pipefail
+          base=https://ftp.ncbi.nlm.nih.gov/pubchem/RDF/compound/general
+          total=0
+          for i in $(seq -w 1 9); do
+            file=pc_compound2molecular_formula_00000${i}.ttl.gz
+            size=$(curl -fsSI "$base/$file" | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {gsub("\r", "", $2); print $2}' | tail -1)
+            echo "$file bytes=${size:-unknown}"
+            if [[ ${size:-} =~ ^[0-9]+$ ]]; then total=$((total + size)); fi
+          done
+          echo "total_compressed_bytes=$total"
+          echo '=== sample triples ==='
+          curl -fsSL "$base/pc_compound2molecular_formula_000001.ttl.gz" | gzip -dc | head -20 || true
+          echo '=== release metadata ==='
+          curl -fsSL https://ftp.ncbi.nlm.nih.gov/pubchem/RDF/void.ttl | grep -E 'modified|issued|version|triples' | head -30 || true
