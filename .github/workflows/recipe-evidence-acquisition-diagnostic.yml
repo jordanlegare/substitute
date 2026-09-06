@@ -1,0 +1,99 @@
+name: Recipe evidence acquisition diagnostic
+
+on:
+  pull_request:
+    branches:
+      - feature/recipe-evidence-expansion
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Substitute
+        uses: actions/checkout@v4
+        with:
+          path: substitute
+      - name: Checkout pinned AWASES source
+        uses: actions/checkout@v4
+        with:
+          repository: jd-coderepos/awases-ald
+          ref: 1c67909db3b6219f168907f0552550bf82edb487
+          path: awases
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install focused test dependencies
+        working-directory: substitute
+        run: python -m pip install -e '.[test]'
+      - name: Build frozen evidence and print counts
+        working-directory: substitute
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import ald_recipe_evidence as evidence
+          from tools.refresh_recipe_evidence import parse_awases_rows, build_frozen_evidence
+
+          source = Path('../awases/step 1/data/2-filtered-data.csv')
+          source_bytes = source.read_bytes()
+          with source.open(encoding='ISO-8859-1', newline='') as stream:
+              records = parse_awases_rows(stream)
+          print('parsed_source_records', len(records))
+          material_catalog = json.loads(Path('materials/catalog.json').read_text(encoding='utf-8'))
+          recipe_catalog = json.loads(Path('recipes/compounds/catalog.json').read_text(encoding='utf-8'))
+          evidence_doc, manifest, audit = build_frozen_evidence(
+              records,
+              material_catalog,
+              recipe_catalog,
+              source_metadata={
+                  'awases_repository': 'jd-coderepos/awases-ald',
+                  'awases_ref': '1c67909db3b6219f168907f0552550bf82edb487',
+                  'awases_path': 'step 1/data/2-filtered-data.csv',
+                  'awases_blob_sha': 'f6d08aaaadfbc834d9556b83167102381d72db14',
+                  'awases_content_sha256': hashlib.sha256(source_bytes).hexdigest(),
+                  'awases_license': 'MIT',
+                  'awases_license_blob_sha': '1fa6b40798b07cdc5e5699be79c1693cc2757e29',
+              },
+          )
+          Path('recipes/evidence/process-evidence.json').write_bytes(evidence.canonical_json_bytes(evidence_doc))
+          Path('recipes/evidence/source-manifest.json').write_bytes(evidence.canonical_json_bytes(manifest))
+          Path('recipes/evidence/acquisition-audit.json').write_bytes(evidence.canonical_json_bytes(audit))
+          print(json.dumps(audit, indent=2, sort_keys=True))
+          PY
+      - name: Generate expansion recipes
+        working-directory: substitute
+        run: python tools/build_recipe_expansion.py
+      - name: Rebuild compound catalog
+        working-directory: substitute
+        run: python tools/build_compound_catalog.py
+      - name: Rebuild material catalog
+        working-directory: substitute
+        run: python tools/build_material_catalog.py --target-count 8000
+      - name: Audit evidence
+        working-directory: substitute
+        run: python tools/audit_recipe_evidence.py
+      - name: Canonical checks
+        working-directory: substitute
+        run: |
+          python tools/build_recipe_expansion.py --check
+          python tools/build_compound_catalog.py --check
+          python tools/build_material_catalog.py --check --target-count 8000
+          git diff --check
+      - name: Focused tests
+        working-directory: substitute
+        run: |
+          python -m pytest -q \
+            tests/test_recipe_evidence.py \
+            tests/test_recipe_evidence_refresh.py \
+            tests/test_recipe_evidence_audit.py \
+            tests/test_recipe_expansion.py \
+            tests/test_chemistry_catalog.py \
+            tests/test_chemistry_cli.py \
+            tests/test_material_cli.py \
+            tests/test_compound_catalog.py
+      - name: Show change summary
+        working-directory: substitute
+        run: |
+          git status --short
+          git diff --stat
