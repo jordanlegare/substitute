@@ -3,7 +3,7 @@
 Substitute maintains two deliberately separate catalogs:
 
 1. `recipes/compounds/catalog.json` is the executable simulation-recipe index. It is generated from checked-in `multi-precursor/1` recipes and remains the source for recipe-backed compatibility evidence and candidate ranking.
-2. `materials/catalog.json` is the provenance-backed material identity catalog. Its `ald-material-catalog/1` schema contains exactly 1,000 counted, unique, non-elemental fixed-stoichiometry reduced formulas for the current milestone.
+2. `materials/catalog.json` is the provenance-backed material identity catalog. Its `ald-material-catalog/1` schema contains exactly 8,000 counted, unique, non-elemental fixed-stoichiometry reduced formulas for the current milestone.
 
 A material appearing in `materials/catalog.json` is **not** a claim that Substitute has a validated ALD/MLD process for it. Most entries are identity-only. Only records whose `process_evidence.status` is `executable-recipe` link to checked-in Substitute recipe IDs and paths.
 
@@ -25,7 +25,7 @@ Identity evidence is not compatibility evidence. If a catalog-only material is q
 
 ## Counted milestone
 
-For `ald-material-catalog/1`, CI requires exactly 1,000 counted records. A counted record must:
+For `ald-material-catalog/1`, CI requires exactly 8,000 counted records. A counted record must:
 
 - have a fixed parseable chemical formula;
 - contain at least two distinct elements;
@@ -33,17 +33,17 @@ For `ald-material-catalog/1`, CI requires exactly 1,000 counted records. A count
 - have public provenance;
 - pass the deterministic materials-relevance selection policy.
 
-Polymorphs, multiple COD structures, and repeated literature structures merge under one reduced-formula material identity. Elemental and symbolic/nonstoichiometric records do not contribute to the 1,000 count.
+Polymorphs, multiple COD structures, and repeated literature structures merge under one reduced-formula material identity. Elemental and symbolic/nonstoichiometric records do not contribute to the 8,000 count.
 
 ## Provenance
 
-The primary existence and structural-provenance source is the Crystallography Open Database (COD). The committed frozen source snapshot preserves normalized COD metadata, including COD identifiers and available phase/bibliographic fields, rather than mirroring CIF payloads.
+The catalog uses a two-tier identity-provenance model. COD-backed identities remain the preferred tier because they carry crystallographic/existence provenance plus available phase and bibliographic metadata. The frozen COD pool was built from 533,486 public mirror rows, yielding 33,777 eligible unique fixed inorganic reduced formulas after deterministic filtering.
 
-The canonical snapshot for this milestone was acquired from a dated public mirror of COD metadata and retains COD as the provenance source. The mirror is transport only; it does not replace COD identity/provenance.
+Every counted identity is also required to have an exact molecular-formula match in the full PubChemRDF mirror release dated 2026-07-25. The audit streams all nine molecular-formula shards; the current frozen audit scanned 124,004,129 formula records. Of the 33,777 COD candidate formulas, 7,122 had exact PubChemRDF matches.
 
-PubChem enrichment is optional. An enrichment is accepted only when the query resolves unambiguously and its returned molecular formula normalizes to the same reduced formula. Failure or ambiguity in PubChem does not invalidate a COD-backed material.
+Because the COD-plus-PubChem intersection is smaller than the 8,000 milestone, the remaining 878 selected records come from an explicitly lower provenance tier named `pubchem-primary`. These supplemental records are fixed-stoichiometry, non-elemental, material-like inorganic identities with PubChem CID/formula evidence and no claim of COD crystallographic backing. The bulk audit retained a bounded pool of 4,000 such supplemental formulas, producing 11,122 total eligible PubChem-matched identities before final ranking and selection.
 
-Materials Project is not required to build or use the canonical catalog.
+PubChem-primary identity evidence never creates ALD/MLD process evidence, compatibility evidence, fabrication mappings, or operating conditions. Materials Project is not required to build or use the canonical catalog.
 
 ## Offline deterministic build
 
@@ -65,13 +65,13 @@ materials/build-audit.json
 Rebuild them offline with:
 
 ```bash
-python tools/build_material_catalog.py --target-count 1000
+python tools/build_material_catalog.py --target-count 8000
 ```
 
 Verify that the checked-in artifacts are byte-identical to a rebuild from the frozen inputs with:
 
 ```bash
-python tools/build_material_catalog.py --check --target-count 1000
+python tools/build_material_catalog.py --check --target-count 8000
 ```
 
 `materials/build-audit.json` records the source candidate counts, exclusions, duplicate collapses, class and element distributions, PubChem enrichment coverage, recipe-link coverage, ordered final material IDs, and input/output digests.
@@ -114,7 +114,7 @@ ald-master --materials-catalog path/to/catalog.json materials report
 
 ## Compatibility behavior
 
-The exhaustive compatibility snapshot remains bounded to the executable recipe catalog. The 1,000 identity records are **not** expanded into a roughly one-million-edge mostly-unknown graph.
+The exhaustive compatibility snapshot remains bounded to the executable recipe catalog. The 8,000 identity records are **not** expanded into an enormous mostly-unknown compatibility graph.
 
 For a recipe-backed material, existing compatibility queries behave as before. For a catalog-only material, the CLI can resolve the identity but returns unavailable compatibility evidence explicitly as `UNKNOWN`; missing evidence is never treated as incompatibility.
 
