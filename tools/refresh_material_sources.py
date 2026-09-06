@@ -8,9 +8,10 @@ are built separately by ``tools/build_material_catalog.py``.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -23,6 +24,9 @@ import ald_materials as materials
 COD_SEARCH_URL = "https://www.crystallography.net/cod/result"
 PUBCHEM_PUG_URL = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 USER_AGENT = "Substitute-material-catalog/1"
+_PUBCHEM_RDF_FORMULA_RE = re.compile(
+    r'^compound:CID([0-9]+)\s+vocab:molecular_formula\s+"([^"]+)"\s+\.\s*$'
+)
 
 
 def _text(value: Any) -> str | None:
@@ -103,6 +107,54 @@ def normalize_pubchem_payload(reduced_formula: str, payload: Mapping[str, Any]) 
         if value is not None:
             result[output_key] = value
     return result
+
+
+def parse_pubchem_rdf_formula_line(line: str) -> tuple[str, str] | None:
+    """Parse one PubChemRDF compound-to-molecular-formula Turtle record."""
+    match = _PUBCHEM_RDF_FORMULA_RE.match(line.strip())
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def audit_pubchem_rdf_lines(
+    lines: Iterable[str], target_formulas: Sequence[str] | set[str]
+) -> dict[str, Any]:
+    """Audit an iterable of formula triples against reduced target formulas."""
+    targets: set[str] = set()
+    for formula in target_formulas:
+        try:
+            reduced, _ = materials.reduce_formula(formula)
+        except ValueError:
+            continue
+        targets.add(reduced)
+
+    matched_sets: dict[str, set[str]] = {}
+    formula_records_scanned = 0
+    unsupported_formula_records = 0
+    for line in lines:
+        parsed = parse_pubchem_rdf_formula_line(line)
+        if parsed is None:
+            continue
+        formula_records_scanned += 1
+        cid, formula = parsed
+        try:
+            reduced, _ = materials.reduce_formula(formula)
+        except ValueError:
+            unsupported_formula_records += 1
+            continue
+        if reduced in targets:
+            matched_sets.setdefault(reduced, set()).add(cid)
+
+    matched = {
+        formula: sorted(cids, key=lambda value: int(value))
+        for formula, cids in sorted(matched_sets.items())
+    }
+    return {
+        "formula_records_scanned": formula_records_scanned,
+        "unsupported_formula_records": unsupported_formula_records,
+        "matched": matched,
+    }
 
 
 def _load_or_fetch_json(url: str, *, cache_path: Path | None, timeout: float, retries: int) -> Any:
