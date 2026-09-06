@@ -14,12 +14,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: feature/material-catalog-1000
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install acquisition dependency
-        run: python -m pip install 'duckdb>=1.1,<2'
-      - name: Acquire normalized COD mirror metadata
+      - name: Install test and acquisition dependencies
+        run: python -m pip install -e '.[test]' 'duckdb>=1.1,<2'
+      - name: Material catalog focused tests
+        run: python -m pytest -q tests/test_material_catalog.py tests/test_material_catalog_ranking.py
+      - name: Acquire full normalized COD mirror candidate pool
         run: |
           python - <<'PY'
           import json
@@ -38,14 +42,11 @@ jobs:
               FROM read_parquet(?)
               WHERE formula IS NOT NULL AND file IS NOT NULL
               ORDER BY file
-              LIMIT 75000
               ''',
               [url],
           ).fetchall()
 
-          records = []
-          per_formula = {}
-          unique_eligible = set()
+          by_formula = {}
           for row in rows:
               file_id, formula, sg, mineral, chemname, commonname, doi, title, journal, year = row
               cleaned = str(formula).strip().strip('-').strip()
@@ -57,19 +58,14 @@ jobs:
                   continue
               if len(elements) < 2:
                   continue
-              # The counted milestone is thin-film/materials focused. Generic molecular
-              # organics are excluded deterministically; carbon-containing inorganics
-              # (carbides, carbonates, cyanides, etc.) remain eligible when H is absent.
               if 'C' in elements and 'H' in elements:
                   continue
               classes = builder.classify_material(elements, reduced, {})
               if not classes:
                   continue
-              count = per_formula.get(reduced, 0)
-              if count >= 2:
+              group = by_formula.setdefault(reduced, [])
+              if len(group) >= 2:
                   continue
-              per_formula[reduced] = count + 1
-              unique_eligible.add(reduced)
               name = next(
                   (str(value).strip() for value in (mineral, chemname, commonname) if value and str(value).strip()),
                   reduced,
@@ -87,12 +83,16 @@ jobs:
               reference_parts = [str(value).strip() for value in (title, journal, year) if value and str(value).strip()]
               if reference_parts:
                   record['reference'] = ' | '.join(reference_parts)
-              records.append(record)
-              if len(unique_eligible) >= 3500:
-                  break
+              group.append(record)
 
-          if len(unique_eligible) < 1500:
-              raise SystemExit(f'insufficient eligible COD formulas: {len(unique_eligible)}')
+          def formula_key(reduced):
+              counts = materials.parse_formula(reduced)
+              return (len(counts), sum(counts.values()), reduced)
+
+          retained_formulas = sorted(by_formula, key=formula_key)[:8000]
+          records = [record for formula in retained_formulas for record in by_formula[formula]]
+          if len(retained_formulas) < 2000:
+              raise SystemExit(f'insufficient eligible COD formulas: {len(retained_formulas)}')
 
           source_root = Path('materials/sources')
           source_root.mkdir(parents=True, exist_ok=True)
@@ -113,27 +113,81 @@ jobs:
                           'mirror_snapshot_date': '2026-07-06',
                           'license': 'CC0-1.0',
                           'mirror_parquet': url,
+                          'full_rows_scanned': len(rows),
+                          'retained_unique_formula_pool': len(retained_formulas),
                       },
                       'pubchem': {
-                          'status': 'optional-enrichment-not-run-in-acquisition-pass'
+                          'status': 'optional-enrichment-pending-selected-catalog-pass'
                       },
                   },
-                  'selection_policy_version': 'materials-1000-v1',
+                  'selection_policy_version': 'materials-1000-v2',
               })
           )
           print(json.dumps({
               'queried_rows': len(rows),
+              'eligible_unique_formulas': len(by_formula),
+              'retained_unique_formulas': len(retained_formulas),
               'normalized_records': len(records),
-              'unique_eligible_formulas': len(unique_eligible),
           }, sort_keys=True))
           PY
-      - name: Build exact 1000-material catalog
+      - name: Build preliminary exact 1000-material catalog
+        run: python tools/build_material_catalog.py --target-count 1000
+      - name: Enrich unambiguous selected formulas from PubChem
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import ald_materials as materials
+          from tools import refresh_material_sources as refresh
+
+          catalog = json.loads(Path('materials/catalog.json').read_text())
+          results = []
+          for index, entry in enumerate(catalog['entries'], start=1):
+              formula = entry['reduced_formula']
+              encoded = urllib.parse.quote(formula, safe='')
+              url = (
+                  'https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/fastformula/'
+                  + encoded
+                  + '/property/IUPACName,Title,InChI,InChIKey,MolecularFormula/JSON'
+              )
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as response:
+                      payload = json.load(response)
+              except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+                  time.sleep(0.26)
+                  continue
+              props = payload.get('PropertyTable', {}).get('Properties', [])
+              if len(props) != 1:
+                  time.sleep(0.26)
+                  continue
+              normalized = refresh.normalize_pubchem_payload(formula, payload)
+              if normalized is not None:
+                  try:
+                      matched, _ = materials.reduce_formula(normalized['molecular_formula'])
+                  except (KeyError, ValueError):
+                      matched = ''
+                  if matched == formula:
+                      results.append(normalized)
+              if index % 100 == 0:
+                  print(f'PubChem checked {index}/1000; accepted {len(results)}')
+              time.sleep(0.26)
+          Path('materials/sources/pubchem-identities.json').write_bytes(
+              materials.canonical_json_bytes({'records': results})
+          )
+          print(f'PubChem unambiguous enrichments: {len(results)}')
+          PY
+      - name: Rebuild canonical exact 1000-material catalog
         run: python tools/build_material_catalog.py --target-count 1000
       - name: Verify acquisition invariants
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
+          import ald_materials as materials
           payload = json.loads(Path('materials/catalog.json').read_text())
           counted = [x for x in payload['entries'] if x['counted']]
           assert payload['counted_non_elemental_reduced_formula_count'] == 1000
@@ -142,11 +196,16 @@ jobs:
           assert all(len(x['elements']) >= 2 for x in counted)
           assert all(x['provenance'] for x in counted)
           assert all(not ('C' in x['elements'] and 'H' in x['elements']) for x in counted)
-          print('verified exactly 1000 unique provenance-backed inorganic/material formulas')
+          required = ['HfO2', 'Al2O3', 'O2Ti', 'O2Si', 'OZn', 'GaN', 'AlN', 'NTi', 'MoS2', 'S2W']
+          formulas = {x['reduced_formula'] for x in counted}
+          missing = [formula for formula in required if formula not in formulas]
+          if missing:
+              raise SystemExit(f'common materials missing after full scan/ranking: {missing}')
+          print('verified exactly 1000 unique provenance-backed materials including common thin-film references')
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: material-catalog-data
+          name: material-catalog-data-v2
           path: |
             materials/sources/cod-materials.json
             materials/sources/pubchem-identities.json
