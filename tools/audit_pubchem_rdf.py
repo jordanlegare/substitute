@@ -18,7 +18,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import ald_materials as materials
-from tools import refresh_material_sources as refresh
+try:
+    from tools import refresh_material_sources as refresh
+except ModuleNotFoundError:
+    import refresh_material_sources as refresh
 
 
 DEFAULT_BASE_URL = "https://ftp.ncbi.nlm.nih.gov/pubchem/RDF/compound/general"
