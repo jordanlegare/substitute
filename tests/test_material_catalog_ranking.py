@@ -36,7 +36,7 @@ def test_relevance_score_prefers_simple_binary_materials_over_complex_salts():
     complex_salt = _record(
         "Ca3O8P2",
         ("Ca", "O", "P"),
-        ("oxide",),
+        ("oxide", "phosphate"),
         provenance=8,
         phases=8,
     )
@@ -47,3 +47,33 @@ def test_relevance_score_prefers_simple_binary_materials_over_complex_salts():
 def test_intermetallics_remain_eligible_materials():
     classes = builder.classify_material(("Al", "Fe"), "AlFe", {})
     assert "intermetallic" in classes
+
+
+def test_recipe_backed_materials_are_linked_and_prioritized():
+    source_records = [
+        {"source": "cod", "source_id": "1", "formula": "HfO2", "name": "hafnium dioxide"},
+        {"source": "cod", "source_id": "2", "formula": "ZrO2", "name": "zirconium dioxide"},
+    ]
+    recipe_entries = [
+        {
+            "recipe_id": "hafnia-water",
+            "path": "recipes/compounds/hafnia-water.json",
+            "target_formula": "HfO2",
+        }
+    ]
+
+    catalog, _manifest, audit = builder.build_material_artifacts(
+        source_records,
+        [],
+        recipe_entries,
+        target_count=1,
+    )
+
+    assert [entry["reduced_formula"] for entry in catalog["entries"]] == ["HfO2"]
+    process = catalog["entries"][0]["process_evidence"]
+    assert process == {
+        "status": "executable-recipe",
+        "recipe_ids": ["hafnia-water"],
+        "recipe_paths": ["recipes/compounds/hafnia-water.json"],
+    }
+    assert audit["recipe_linked_materials"] == 1
