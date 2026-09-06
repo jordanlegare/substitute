@@ -84,6 +84,25 @@ def test_audit_accepts_one_selected_new_target_linked_to_one_generated_recipe():
     assert result["linked_generated_recipe_count"] == 1
 
 
+def test_audit_ignores_symbolic_historical_target_for_fixed_formula_collision_checks():
+    record = selected_record()
+    evidence = ledger(record)
+    symbolic = historical_recipe("CoSx")
+    symbolic["recipe_id"] = "historical-symbolic-001"
+    result = audit_evidence(
+        evidence,
+        manifest_for(evidence),
+        acquisition_audit(),
+        {
+            "catalog_schema": "ald-compound-catalog/1",
+            "entries": [symbolic, historical_recipe("HfO2"), expansion_recipe(record)],
+        },
+        material_catalog("HfO2", "TiN"),
+    )
+    assert result["historical_recipe_backed_target_count"] == 1
+    assert result["generated_recipe_count"] == 1
+
+
 def test_audit_rejects_r1_selected_record():
     record = selected_record(grade="R1")
     evidence = ledger(record)
