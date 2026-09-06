@@ -1,0 +1,64 @@
+name: AtomicLimits missing DOI audit
+
+on:
+  push:
+    branches:
+      - automation/atomiclimits-live-discovery
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f630f7e5f005a1e5ac49a7ac4455f35eed51675d
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Audit excluded live references
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import collections
+          import json
+          import urllib.request
+          from pathlib import Path
+          import ald_materials as materials
+
+          url="https://www.atomiclimits.com/alddatabase/api/processes.php"
+          raw=urllib.request.urlopen(urllib.request.Request(url,headers={"User-Agent":"Substitute evidence audit/1.0","Accept":"application/json"}),timeout=120).read()
+          payload=json.loads(raw)
+          refs_by_process=collections.defaultdict(list)
+          for ref in payload.get("references",[]):
+              refs_by_process[str(ref.get("process_id","")).strip()].append(ref)
+          universe=json.loads(Path("materials/catalog.json").read_text(encoding="utf-8"))
+          universe_formulas={str(e["reduced_formula"]) for e in universe["entries"]}
+          no_doi=[]
+          no_ref=[]
+          for process in payload.get("processes",[]):
+              pid=str(process.get("process_id","")).strip()
+              formula=str(process.get("process_material","")).strip()
+              try:
+                  reduced,elements=materials.reduce_formula(formula)
+              except ValueError:
+                  continue
+              if len(elements)<2 or reduced not in universe_formulas:
+                  continue
+              reactants=[str(process.get(f"process_reactant{x}","")).strip() for x in "ABCD"]
+              if not any(reactants):
+                  continue
+              refs=refs_by_process.get(pid,[])
+              dois=[str(r.get("reference_doi","")).strip() for r in refs if str(r.get("reference_doi","")).strip()]
+              if dois:
+                  continue
+              row={"process_id":pid,"target":formula,"reduced":reduced,"reactants":[r for r in reactants if r],"reviewed":process.get("process_reviewed"),"references":refs}
+              (no_doi if refs else no_ref).append(row)
+          print("IN_UNIVERSE_WITH_REFS_BUT_NO_DOI",len(no_doi))
+          print("DISTINCT_TARGETS_WITH_REFS_BUT_NO_DOI",len({r["reduced"] for r in no_doi}))
+          print("IN_UNIVERSE_WITH_NO_REFERENCES",len(no_ref))
+          print("DISTINCT_TARGETS_WITH_NO_REFERENCES",len({r["reduced"] for r in no_ref}))
+          print("REFERENCE_KEYS",sorted({k for row in no_doi for ref in row["references"] for k in ref}))
+          for row in no_doi[:25]:
+              print("NO_DOI_SAMPLE",json.dumps(row,sort_keys=True,ensure_ascii=False)[:2500])
+          PY
