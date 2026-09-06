@@ -29,6 +29,7 @@ import ald_recipe_evidence as evidence
 AWASES_REPOSITORY = "jd-coderepos/awases-ald"
 AWASES_PATH = "step 1/data/2-filtered-data.csv"
 ATOMICLIMITS_DATABASE_DOI = "10.6100/alddatabase"
+ATOMICLIMITS_API_URL = "https://www.atomiclimits.com/alddatabase/api/processes.php"
 CROSSREF_BASE = "https://api.crossref.org/works/"
 OPENALEX_BASE = "https://api.openalex.org/works/"
 
@@ -492,6 +493,22 @@ def fetch_url_bytes(url: str) -> bytes:
     )
     with urlopen(request, timeout=60) as response:
         return response.read()
+
+
+def fetch_atomiclimits_records(
+    cache_dir: Path,
+    fetcher: Callable[[str], bytes] = fetch_url_bytes,
+) -> list[dict[str, object]]:
+    """Fetch, cache, and strictly normalize the public AtomicLimits process index."""
+
+    payload = cached_fetch_json(
+        ATOMICLIMITS_API_URL,
+        cache_dir / "atomiclimits",
+        fetcher,
+    )
+    if not isinstance(payload, Mapping):
+        raise ValueError("AtomicLimits process response is not an object")
+    return parse_atomiclimits_api_payload(payload)
 
 
 def crossref_url(doi: str) -> str:
