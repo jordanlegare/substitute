@@ -116,6 +116,169 @@ def _flag(value: object) -> bool:
     return str(value).strip().casefold() in {"1", "true", "yes", "y"}
 
 
+def _atomiclimits_live_family(process: Mapping[str, object]) -> str:
+    """Classify a reviewed AtomicLimits process without persisting notes.
+
+    AtomicLimits is itself an ALD process index. Explicit plasma/MLD/hybrid
+    markers override the thermal default; notes are transient classification
+    input only and are never copied into evidence records.
+    """
+
+    reactant_text = _fold_text(
+        process.get("process_reactantA"),
+        process.get("process_reactantB"),
+        process.get("process_reactantC"),
+        process.get("process_reactantD"),
+        process.get("process_note"),
+    )
+    compact = " ".join(reactant_text.split())
+    if any(
+        marker in compact
+        for marker in (
+            "ald/mld",
+            "mld/ald",
+            "ald mld",
+            "mld ald",
+            "hybrid molecular layer",
+        )
+    ):
+        return "hybrid"
+    if "molecular layer deposition" in compact or " mld " in f" {compact} ":
+        return "mld"
+    if any(marker in compact for marker in ("plasma", "peald", "radical")):
+        return "plasma-ald"
+    return "thermal-ald"
+
+
+def parse_atomiclimits_api_payload(
+    payload: Mapping[str, object],
+) -> list[dict[str, object]]:
+    """Normalize the public live AtomicLimits process API into evidence records.
+
+    The endpoint returns process chemistry and linked references separately.
+    This join keeps only fixed target formulas, exact reactant source labels,
+    stable DOI references, review flags, and non-operational provenance.
+    """
+
+    if payload.get("success") is not True:
+        raise ValueError("AtomicLimits API payload is not successful")
+    raw_processes = payload.get("processes")
+    raw_references = payload.get("references")
+    if not isinstance(raw_processes, list) or not isinstance(raw_references, list):
+        raise ValueError(
+            "AtomicLimits API payload must contain process and reference arrays"
+        )
+
+    references_by_process: dict[str, list[dict[str, object]]] = {}
+    for raw_reference in raw_references:
+        if not isinstance(raw_reference, Mapping):
+            continue
+        process_id = str(raw_reference.get("process_id", "")).strip()
+        reference_id = str(raw_reference.get("reference_id", "")).strip()
+        doi_raw = str(raw_reference.get("reference_doi", "")).strip()
+        if not process_id or not doi_raw:
+            continue
+        try:
+            doi = evidence.normalize_doi(doi_raw)
+        except ValueError:
+            continue
+        reference: dict[str, object] = {
+            "type": "doi",
+            "identifier": doi,
+            "direct": True,
+            "reviewed": _flag(raw_reference.get("reference_reviewed")),
+        }
+        if reference_id:
+            reference["reference_id"] = reference_id
+        references_by_process.setdefault(process_id, []).append(reference)
+
+    records: list[dict[str, object]] = []
+    for raw_process in raw_processes:
+        if not isinstance(raw_process, Mapping):
+            continue
+        process_id = str(raw_process.get("process_id", "")).strip()
+        target_formula = str(raw_process.get("process_material", "")).strip()
+        if not process_id or not target_formula:
+            continue
+        try:
+            target_reduced, target_elements = materials.reduce_formula(target_formula)
+        except ValueError:
+            continue
+        if len(target_elements) < 2:
+            continue
+
+        reactants: list[dict[str, str]] = []
+        for suffix, role in (
+            ("A", "reactant-a"),
+            ("B", "reactant-b"),
+            ("C", "reactant-c"),
+            ("D", "reactant-d"),
+        ):
+            label = str(raw_process.get(f"process_reactant{suffix}", "")).strip()
+            if label:
+                reactants.append({"label": label, "role": role})
+        if not reactants:
+            continue
+
+        source_references = references_by_process.get(process_id, [])
+        publications_by_doi: dict[str, dict[str, object]] = {}
+        reference_ids: set[str] = set()
+        any_reference_reviewed = False
+        for source_reference in source_references:
+            doi = str(source_reference["identifier"])
+            publications_by_doi[doi] = {
+                "type": "doi",
+                "identifier": doi,
+                "direct": True,
+            }
+            any_reference_reviewed = (
+                any_reference_reviewed
+                or source_reference.get("reviewed") is True
+            )
+            reference_id = source_reference.get("reference_id")
+            if isinstance(reference_id, str) and reference_id:
+                reference_ids.add(reference_id)
+        if not publications_by_doi:
+            continue
+
+        process_reviewed = _flag(raw_process.get("process_reviewed"))
+        raw_record: dict[str, object] = {
+            "target_material": target_formula,
+            "target_formula": target_formula,
+            "process_family": _atomiclimits_live_family(raw_process),
+            "reactants": reactants,
+            "publications": [
+                publications_by_doi[key] for key in sorted(publications_by_doi)
+            ],
+            "discovery_sources": ["atomiclimits"],
+            "evidence_grade": (
+                "R3" if process_reviewed and any_reference_reviewed else "R2"
+            ),
+            "selection_status": "candidate",
+            "provenance": {
+                "primary_process_index": "atomiclimits",
+                "atomiclimits_database_doi": ATOMICLIMITS_DATABASE_DOI,
+                "transport": "atomiclimits-live-api",
+                "process_id": process_id,
+                "process_reviewed": process_reviewed,
+                "reference_ids": sorted(reference_ids),
+                "reviewed_reference_present": any_reference_reviewed,
+            },
+        }
+        normalized = evidence.validate_evidence_record(raw_record)
+        if normalized["target_reduced_formula"] != target_reduced:
+            raise ValueError("target formula normalization mismatch")
+        records.append(normalized)
+
+    records.sort(
+        key=lambda item: (
+            str(item["target_reduced_formula"]),
+            str(item["evidence_id"]),
+        )
+    )
+    return records
+
+
 def _safe_source_provenance(row: Mapping[str, object]) -> dict[str, object]:
     """Return allow-listed provenance metadata only."""
 
