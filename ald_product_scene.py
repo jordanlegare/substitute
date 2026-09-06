@@ -85,10 +85,10 @@ def _multi_scene(recipe: core.Recipe, *, stage: str, simulation=None) -> MultiPr
     notice = _plain(metadata.get("simulation_notice"), "metadata.simulation_notice")
 
     surface = recipe.surface
-    region_count = surface.get("regions")
+    region_count = surface.get("regions", 1)
     if type(region_count) is not int or region_count <= 0:
         raise core.RecipeError("surface.regions must be a positive integer")
-    transport_raw = surface.get("transport_factors")
+    transport_raw = surface.get("transport_factors", (1.0,) * region_count)
     if not isinstance(transport_raw, Sequence) or isinstance(transport_raw, (str, bytes)):
         raise core.RecipeError("surface.transport_factors must be an array")
     transport = tuple(

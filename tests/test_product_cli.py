@@ -8,6 +8,9 @@ from ald_media_controller import ExitCode, main
 
 PRODUCT_RECIPE = Path("recipes/majorana2_public_specs_reference_sim.json")
 SURROGATE_PRODUCT_RECIPE = Path("recipes/products/cmos_high_k_gate_sim.json")
+MLD_DEFAULT_SURFACE_RECIPE = Path(
+    "recipes/compounds/molecular_layer_deposition/al_zn_eg_hq_surrogate.json"
+)
 
 
 def test_compile_product_refuses_existing_output(tmp_path):
@@ -17,6 +20,32 @@ def test_compile_product_refuses_existing_output(tmp_path):
     result = main(["compile-product", str(PRODUCT_RECIPE), "--output", str(output)])
 
     assert result == int(ExitCode.OUTPUT)
+
+
+@pytest.mark.requires_ffmpeg
+def test_multi_precursor_product_defaults_missing_surface_visualization_fields(tmp_path, capsys):
+    bundle = tmp_path / "mld-product"
+
+    assert main(
+        [
+            "compile-product",
+            str(MLD_DEFAULT_SURFACE_RECIPE),
+            "--seed",
+            "42",
+            "--output",
+            str(bundle),
+            "--overwrite",
+        ]
+    ) == int(ExitCode.OK)
+    capsys.readouterr()
+
+    document = json.loads((bundle / "product.json").read_text(encoding="utf-8"))
+    assert document["recipe_id"] == "cat-mld-al_zn_eg_hq_surrogate-001"
+    assert document["regions"] == [
+        {"index": 1, "label": "simulation region 1", "transport_factor": 1.0}
+    ]
+
+    assert main(["verify-product", str(bundle / "bundle.json")]) == int(ExitCode.OK)
 
 
 @pytest.mark.requires_ffmpeg
