@@ -1,0 +1,391 @@
+"""Refresh non-operational ALD/MLD chemistry evidence from public sources.
+
+This is the only recipe-evidence component that is allowed to access the
+network.  Canonical evidence stores target identity, exact reactant source
+labels, process family, and publication provenance only; literature operating
+conditions and full text are deliberately discarded.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+from pathlib import Path
+import sys
+from typing import Callable, Mapping, TextIO
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import ald_materials as materials
+import ald_recipe_evidence as evidence
+
+
+AWASES_REPOSITORY = "jd-coderepos/awases-ald"
+AWASES_PATH = "step 1/data/2-filtered-data.csv"
+ATOMICLIMITS_DATABASE_DOI = "10.6100/alddatabase"
+CROSSREF_BASE = "https://api.crossref.org/works/"
+OPENALEX_BASE = "https://api.openalex.org/works/"
+
+_REACTANT_COLUMNS = (
+    ("process_reactanta", "reactant-a"),
+    ("process_reactantb", "reactant-b"),
+    ("process_reactantc", "reactant-c"),
+    ("process_reactantd", "reactant-d"),
+)
+_NON_CYCLIC_PHRASES = (
+    "chemical vapor deposition",
+    "chemical vapour deposition",
+    "physical vapor deposition",
+    "physical vapour deposition",
+    "sputtering",
+    "evaporation",
+    "solution growth",
+    "sol-gel",
+)
+
+
+def _fold_text(*values: object) -> str:
+    return " ".join(
+        str(value).casefold().replace("_", " ").replace("-", " ")
+        for value in values
+        if value not in (None, "")
+    )
+
+
+def classify_process_family(title: str, abstract: str, full_text: str) -> str | None:
+    """Classify only explicit cyclic ALD/MLD process language.
+
+    The source text is used transiently and is never returned by this function
+    or persisted by :func:`parse_awases_rows`.
+    """
+
+    text = _fold_text(title, abstract, full_text)
+    compact = " ".join(text.split())
+
+    has_atomic_layer = "atomic layer deposition" in compact
+    has_ald_token = any(
+        token in compact.split()
+        for token in ("ald", "peald")
+    )
+    has_molecular_layer = "molecular layer deposition" in compact
+    has_mld_token = "mld" in compact.split()
+
+    hybrid_markers = (
+        "ald/mld",
+        "mld/ald",
+        "ald mld",
+        "mld ald",
+        "hybrid atomic layer",
+        "hybrid molecular layer",
+        "hybrid cyclic deposition",
+    )
+    raw_folded = " ".join(
+        str(value).casefold() for value in (title, abstract, full_text) if value
+    )
+    if (has_atomic_layer or has_ald_token) and (has_molecular_layer or has_mld_token):
+        return "hybrid"
+    if any(marker in raw_folded for marker in hybrid_markers):
+        return "hybrid"
+    if has_molecular_layer or has_mld_token:
+        return "mld"
+
+    plasma_markers = (
+        "plasma enhanced atomic layer deposition",
+        "plasma assisted atomic layer deposition",
+        "plasma atomic layer deposition",
+        "peald",
+    )
+    if any(marker in compact for marker in plasma_markers):
+        return "plasma-ald"
+
+    if has_atomic_layer or has_ald_token:
+        return "thermal-ald"
+
+    if any(phrase in compact for phrase in _NON_CYCLIC_PHRASES):
+        return None
+    return None
+
+
+def _flag(value: object) -> bool:
+    return str(value).strip().casefold() in {"1", "true", "yes", "y"}
+
+
+def _safe_source_provenance(row: Mapping[str, object]) -> dict[str, object]:
+    """Return allow-listed provenance metadata only."""
+
+    result: dict[str, object] = {
+        "primary_process_index": "atomiclimits",
+        "atomiclimits_database_doi": ATOMICLIMITS_DATABASE_DOI,
+        "transport": "awases-ald-structured-export",
+    }
+    process_id = str(row.get("process_id", "")).strip()
+    reference_id = str(row.get("reference_id", "")).strip()
+    if process_id:
+        result["process_id"] = process_id
+    if reference_id:
+        result["reference_id"] = reference_id
+    result["process_reviewed"] = _flag(row.get("process_reviewed"))
+    result["reference_reviewed"] = _flag(row.get("reference_reviewed"))
+    return result
+
+
+def parse_awases_rows(stream: TextIO) -> list[dict[str, object]]:
+    """Normalize structured AtomicLimits-derived rows into evidence records.
+
+    ``title``, ``abstract``, ``full_text``, ``process_note`` and all other
+    non-allow-listed source columns are transient inputs only and never copied
+    into returned records.
+    """
+
+    reader = csv.DictReader(stream)
+    required = {
+        "process_material",
+        "process_reactanta",
+        "reference_doi",
+        "title",
+        "abstract",
+        "full_text",
+    }
+    if reader.fieldnames is None or not required.issubset(set(reader.fieldnames)):
+        missing = sorted(required.difference(set(reader.fieldnames or [])))
+        raise ValueError(f"AWASES source is missing required columns: {', '.join(missing)}")
+
+    records: list[dict[str, object]] = []
+    for row in reader:
+        target_formula = str(row.get("process_material", "")).strip()
+        if not target_formula:
+            continue
+        try:
+            target_reduced, target_elements = materials.reduce_formula(target_formula)
+        except ValueError:
+            continue
+        if len(target_elements) < 2:
+            continue
+
+        family = classify_process_family(
+            str(row.get("title", "")),
+            str(row.get("abstract", "")),
+            str(row.get("full_text", "")),
+        )
+        if family is None:
+            continue
+
+        doi_raw = str(row.get("reference_doi", "")).strip()
+        if not doi_raw:
+            continue
+        try:
+            doi = evidence.normalize_doi(doi_raw)
+        except ValueError:
+            continue
+
+        reactants: list[dict[str, str]] = []
+        for column, role in _REACTANT_COLUMNS:
+            label = str(row.get(column, "")).strip()
+            if label:
+                reactants.append({"label": label, "role": role})
+        if not reactants:
+            continue
+
+        reviewed = _flag(row.get("process_reviewed")) and _flag(row.get("reference_reviewed"))
+        raw_record: dict[str, object] = {
+            "target_material": target_formula,
+            "target_formula": target_formula,
+            "process_family": family,
+            "reactants": reactants,
+            "publications": [
+                {
+                    "type": "doi",
+                    "identifier": doi,
+                    "direct": True,
+                }
+            ],
+            "discovery_sources": ["atomiclimits"],
+            "evidence_grade": "R3" if reviewed else "R2",
+            "selection_status": "candidate",
+            "provenance": _safe_source_provenance(row),
+        }
+        normalized = evidence.validate_evidence_record(raw_record)
+        # Be explicit that the fixed formula used by validation is the source
+        # selection key; this also catches accidental future parser drift.
+        if normalized["target_reduced_formula"] != target_reduced:
+            raise ValueError("target formula normalization mismatch")
+        records.append(normalized)
+
+    records.sort(
+        key=lambda item: (
+            str(item["target_reduced_formula"]),
+            str(item["evidence_id"]),
+        )
+    )
+    return records
+
+
+def _first_text(value: object) -> str | None:
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _crossref_year(message: Mapping[str, object]) -> int | None:
+    for key in ("published-print", "published-online", "published", "issued"):
+        value = message.get(key)
+        if not isinstance(value, Mapping):
+            continue
+        parts = value.get("date-parts")
+        if (
+            isinstance(parts, list)
+            and parts
+            and isinstance(parts[0], list)
+            and parts[0]
+            and type(parts[0][0]) is int
+        ):
+            return int(parts[0][0])
+    return None
+
+
+def normalize_crossref_work(payload: Mapping[str, object]) -> dict[str, object]:
+    message = payload.get("message")
+    if not isinstance(message, Mapping):
+        raise ValueError("Crossref payload is missing message object")
+    doi = evidence.normalize_doi(str(message.get("DOI", "")))
+    result: dict[str, object] = {"type": "doi", "identifier": doi}
+    title = _first_text(message.get("title"))
+    journal = _first_text(message.get("container-title"))
+    year = _crossref_year(message)
+    if title is not None:
+        result["title"] = title
+    if journal is not None:
+        result["journal"] = journal
+    if year is not None:
+        result["year"] = year
+    return result
+
+
+def normalize_openalex_work(payload: Mapping[str, object]) -> dict[str, object]:
+    doi_raw = payload.get("doi")
+    if not isinstance(doi_raw, str) or not doi_raw.strip():
+        raise ValueError("OpenAlex work is missing DOI")
+    result: dict[str, object] = {
+        "type": "doi",
+        "identifier": evidence.normalize_doi(doi_raw),
+    }
+    title = _first_text(payload.get("title"))
+    if title is not None:
+        result["title"] = title
+    location = payload.get("primary_location")
+    if isinstance(location, Mapping):
+        source = location.get("source")
+        if isinstance(source, Mapping):
+            journal = _first_text(source.get("display_name"))
+            if journal is not None:
+                result["journal"] = journal
+    year = payload.get("publication_year")
+    if type(year) is int:
+        result["year"] = year
+    openalex_id = payload.get("id")
+    if isinstance(openalex_id, str) and openalex_id.strip():
+        result["openalex_id"] = openalex_id.rstrip("/").rsplit("/", 1)[-1]
+    return result
+
+
+def cached_fetch_json(
+    url: str,
+    cache_dir: Path,
+    fetcher: Callable[[str], bytes],
+) -> object:
+    """Fetch JSON once and replay byte-stable cached canonical JSON later."""
+
+    if not isinstance(url, str) or not url:
+        raise ValueError("URL must be non-empty")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_name = hashlib.sha256(url.encode("utf-8")).hexdigest() + ".json"
+    cache_path = cache_dir / cache_name
+    if cache_path.exists():
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+
+    payload = json.loads(fetcher(url).decode("utf-8-sig"))
+    cache_path.write_bytes(evidence.canonical_json_bytes(payload))
+    return payload
+
+
+def fetch_url_bytes(url: str) -> bytes:
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "substitute-recipe-evidence/1 (+https://github.com/jordanlegare/substitute)",
+            "Accept": "application/json,text/csv;q=0.9,*/*;q=0.1",
+        },
+    )
+    with urlopen(request, timeout=60) as response:
+        return response.read()
+
+
+def crossref_url(doi: str) -> str:
+    return CROSSREF_BASE + quote(evidence.normalize_doi(doi), safe="")
+
+
+def openalex_url(doi: str) -> str:
+    return OPENALEX_BASE + quote("https://doi.org/" + evidence.normalize_doi(doi), safe="")
+
+
+def resolve_publication(
+    doi: str,
+    cache_dir: Path,
+    fetcher: Callable[[str], bytes] = fetch_url_bytes,
+) -> dict[str, object]:
+    """Resolve DOI metadata through Crossref, falling back to OpenAlex."""
+
+    try:
+        payload = cached_fetch_json(crossref_url(doi), cache_dir / "crossref", fetcher)
+        if not isinstance(payload, Mapping):
+            raise ValueError("Crossref response is not an object")
+        return normalize_crossref_work(payload)
+    except (OSError, ValueError, json.JSONDecodeError):
+        payload = cached_fetch_json(openalex_url(doi), cache_dir / "openalex", fetcher)
+        if not isinstance(payload, Mapping):
+            raise ValueError("OpenAlex response is not an object")
+        return normalize_openalex_work(payload)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--awases-ref",
+        required=True,
+        help="pinned AWASES Git commit/tag used for the structured source export",
+    )
+    parser.add_argument("--cache-dir", type=Path, default=Path(".cache/recipe-evidence"))
+    parser.add_argument(
+        "--source-csv",
+        type=Path,
+        help="optional already-downloaded AWASES CSV; production artifact writing is handled by later audit/build stages",
+    )
+    args = parser.parse_args(argv)
+
+    if args.source_csv is None:
+        print(
+            "refresh adapter ready: provide --source-csv for local normalization; "
+            "bulk frozen-artifact acquisition is performed by the audited refresh workflow",
+            file=sys.stderr,
+        )
+        return 0
+
+    with args.source_csv.open(encoding="ISO-8859-1", newline="") as stream:
+        records = parse_awases_rows(stream)
+    print(json.dumps({"candidate_count": len(records), "awases_ref": args.awases_ref}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
