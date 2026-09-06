@@ -1,0 +1,36 @@
+name: Apply recipe evidence dedup fix
+
+on:
+  push:
+    branches:
+      - automation/recipe-evidence-dedup
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/recipe-evidence-dedup
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[test]'
+      - name: Apply patch
+        run: python tools/patch_recipe_evidence_dedup.py
+      - name: Verify focused test
+        run: python -m pytest tests/test_recipe_evidence_refresh.py::test_build_frozen_evidence_collapses_duplicate_canonical_evidence_ids -q
+      - name: Remove staging helpers
+        run: |
+          rm tools/patch_recipe_evidence_dedup.py
+          rm .github/workflows/apply-recipe-evidence-dedup.yml
+      - name: Commit fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tools/refresh_recipe_evidence.py tests/test_recipe_evidence_refresh.py tools/patch_recipe_evidence_dedup.py .github/workflows/apply-recipe-evidence-dedup.yml
+          git commit -m 'fix: collapse duplicate canonical recipe evidence'
+          git push origin HEAD:automation/recipe-evidence-dedup
