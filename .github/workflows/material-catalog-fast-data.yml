@@ -1,0 +1,120 @@
+name: Material catalog fast COD build
+
+on:
+  push:
+    branches:
+      - automation/material-catalog-fast-data
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[test]' 'duckdb>=1.1,<2'
+      - name: Acquire full COD candidate pool
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import duckdb
+          import ald_materials as materials
+          from tools import build_material_catalog as builder
+
+          url = 'https://huggingface.co/datasets/LMucko/crystallography-open-database/resolve/main/cod_full.parquet'
+          con = duckdb.connect()
+          con.execute('INSTALL httpfs')
+          con.execute('LOAD httpfs')
+          rows = con.execute(
+              '''
+              SELECT file, formula, sg, mineral, chemname, commonname, doi, title, journal, year
+              FROM read_parquet(?)
+              WHERE formula IS NOT NULL AND file IS NOT NULL
+              ORDER BY file
+              ''',
+              [url],
+          ).fetchall()
+
+          by_formula = {}
+          for row in rows:
+              file_id, formula, sg, mineral, chemname, commonname, doi, title, journal, year = row
+              cleaned = str(formula).strip().strip('-').strip()
+              if not cleaned:
+                  continue
+              try:
+                  reduced, elements = materials.reduce_formula(cleaned)
+              except ValueError:
+                  continue
+              if len(elements) < 2 or ('C' in elements and 'H' in elements):
+                  continue
+              if not builder.classify_material(elements, reduced, {}):
+                  continue
+              group = by_formula.setdefault(reduced, [])
+              if len(group) >= 2:
+                  continue
+              name = next(
+                  (str(value).strip() for value in (mineral, chemname, commonname) if value and str(value).strip()),
+                  reduced,
+              )
+              record = {'source': 'cod', 'source_id': str(file_id), 'formula': cleaned, 'name': name}
+              if sg and str(sg).strip():
+                  record['space_group'] = str(sg).strip()
+              if doi and str(doi).strip():
+                  record['doi'] = str(doi).strip()
+              ref = [str(value).strip() for value in (title, journal, year) if value and str(value).strip()]
+              if ref:
+                  record['reference'] = ' | '.join(ref)
+              group.append(record)
+
+          def formula_key(reduced):
+              counts = materials.parse_formula(reduced)
+              return (len(counts), sum(counts.values()), reduced)
+
+          retained = sorted(by_formula, key=formula_key)[:8000]
+          records = [record for formula in retained for record in by_formula[formula]]
+          root = Path('materials/sources')
+          root.mkdir(parents=True, exist_ok=True)
+          (root / 'cod-materials.json').write_bytes(materials.canonical_json_bytes({'records': records}))
+          (root / 'pubchem-identities.json').write_bytes(materials.canonical_json_bytes({'records': []}))
+          Path('materials/source-manifest.json').parent.mkdir(parents=True, exist_ok=True)
+          Path('materials/source-manifest.json').write_bytes(materials.canonical_json_bytes({
+              'retrieved_at': '2026-09-06T00:00:00Z',
+              'source_metadata': {
+                  'cod': {
+                      'primary_database': 'Crystallography Open Database',
+                      'transport_mirror': 'LMucko/crystallography-open-database',
+                      'mirror_snapshot_date': '2026-07-06',
+                      'license': 'CC0-1.0',
+                      'mirror_parquet': url,
+                      'full_rows_scanned': len(rows),
+                      'eligible_unique_formulas': len(by_formula),
+                      'retained_unique_formula_pool': len(retained),
+                  },
+                  'pubchem': {'status': 'optional-enrichment-unresolved'},
+              },
+              'selection_policy_version': 'materials-1000-v2',
+          }))
+          print(json.dumps({'rows': len(rows), 'eligible_unique': len(by_formula), 'retained': len(retained), 'records': len(records)}, sort_keys=True))
+          PY
+      - name: Build exact catalog
+        run: python tools/build_material_catalog.py --target-count 1000
+      - name: Verify canonical acceptance
+        run: |
+          python -m pytest -q tests/test_material_catalog_real.py
+          python tools/build_material_catalog.py --check --target-count 1000
+      - uses: actions/upload-artifact@v4
+        with:
+          name: material-catalog-cod-only
+          path: |
+            materials/sources/cod-materials.json
+            materials/sources/pubchem-identities.json
+            materials/source-manifest.json
+            materials/catalog.json
+            materials/build-audit.json
+          retention-days: 7
