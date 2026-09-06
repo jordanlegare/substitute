@@ -54,6 +54,7 @@ py-modules = [
   "ald_product_cli",
   "ald_master",
   "ald_compatibility",
+  "ald_materials",
 ]
 packages = ["ald_compatibility", "ald_master"]
 
