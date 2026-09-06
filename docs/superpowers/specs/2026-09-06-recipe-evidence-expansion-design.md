@@ -19,6 +19,7 @@ There is no arbitrary recipe-count target. The stopping condition is evidence ex
 5. **Hybrid evidence funnel:** AtomicLimits is the primary process-discovery index; direct scholarly metadata/search is the fallback for unmatched materials.
 6. **No inferred analogue chemistry.** Similarity to another material or precursor family never creates an executable recipe.
 7. **Exact source labels are valid reactant identities.** AtomicLimits-derived records often identify a precursor/co-reactant by an explicit formula, shorthand, plasma label, or source-specific chemical label rather than a canonical common name. The exact reported label is required and preserved; canonical `name` and `formula` fields are optional enrichments and must never be invented merely to satisfy a schema.
+8. **Chemistry-first exploration UX.** Users browse source-backed chemistry through a dedicated `ald-master chemistry` namespace. Identity browsing stays under `materials`; execution stays under the existing recipe workflow. The chemistry surface shows target, reactants, process family, evidence grade, source references, and recipe linkage while hiding synthetic simulator numbers by default.
 
 ## Scientific and safety boundary
 
@@ -320,6 +321,81 @@ The expansion is complete for a frozen source refresh when the pipeline has:
 
 The resulting recipe count is therefore the maximum distinct-material coverage justified by that evidence snapshot, not a padded file-count objective.
 
+## Chemistry exploration UX
+
+The primary human-facing exploration surface is a dedicated command namespace:
+
+```text
+ald-master chemistry search TEXT
+ald-master chemistry show CHEMISTRY
+ald-master chemistry list [filters]
+ald-master chemistry sources CHEMISTRY
+ald-master chemistry report
+```
+
+All commands support `--json` for machine-readable output.
+
+### Search
+
+`chemistry search` searches target formula/name, precursor/co-reactant exact source labels, resolved reactant names/formulas, process family, recipe ID, DOI/stable source identifier, and evidence grade. Results are ranked deterministically with exact target-formula and recipe-ID matches first, then target-name matches, then reactant matches, then source-text matches.
+
+### Show
+
+`chemistry show` accepts target formula, recipe ID, or deterministic chemistry ID and prints a chemistry card containing:
+
+- target name/formula;
+- process family;
+- exact precursor/co-reactant source labels plus any independently resolved canonical identities and roles;
+- evidence grade (`R3`, `R2`, or `historical`);
+- selected/historical status;
+- recipe ID and recipe path where executable;
+- source references and publication metadata;
+- a clear simulation-only notice;
+- a cross-reference to `ald-master materials show <formula>`.
+
+Synthetic simulator temperature, pressure, dose, purge, plasma settings, and other executable numbers are not shown by chemistry exploration commands.
+
+### List
+
+`chemistry list` supports composable filters:
+
+```text
+--process-family thermal-ald|plasma-ald|mld|hybrid
+--element ELEMENT
+--precursor TEXT
+--evidence R2|R3|historical
+--origin expansion|historical
+--limit N
+```
+
+Default ordering is target reduced formula, then origin (`historical` before `expansion` for the same target), then deterministic chemistry ID.
+
+### Sources
+
+`chemistry sources` provides the provenance-focused view: source type, DOI/stable identifier, publication title/year/journal when present, discovery source, evidence grade, and corroboration count. It does not expose operational process conditions.
+
+### Report
+
+`chemistry report` summarizes distinct recipe-backed materials, total executable recipes, expansion-vs-historical counts, process-family counts, evidence-grade counts, unique reactant-label counts, source coverage, and remaining identity-only materials.
+
+### Cross-linking with material identity and execution
+
+`ald-master materials show MATERIAL` remains the material-identity view, but when recipe links exist it prints the executable recipe IDs and a concise hint to inspect them through `ald-master chemistry show <recipe-id>`.
+
+Chemistry exploration does not directly execute recipes. Users who decide to run a simulator workflow continue through the existing `ald-master run ...` or interactive recipe workflow. This separation prevents an evidence-browsing command from looking like physical-process execution.
+
+The interactive top menu gains `Explore recipe chemistries` as a first-class choice. Its flow is:
+
+```text
+Explore recipe chemistries
+→ search or browse
+→ select chemistry
+→ view target/reactants/evidence/sources
+→ optional handoff to existing recipe workflow when executable
+```
+
+The optional handoff uses the existing recipe ID/path and does not create a second execution implementation.
+
 ## User-facing reporting
 
 The expansion adds or extends reporting so users can see:
@@ -346,6 +422,7 @@ This project does not:
 - fabricate recipe chemistry for all 8,000 materials;
 - infer process chemistry from composition similarity;
 - reproduce literature process windows or operating conditions;
+- expose synthetic simulator operating numbers as literature chemistry in exploration output;
 - provide hardware-control instructions;
 - remove historical recipe variants;
 - claim physical-process qualification, reproducibility, safety, or manufacturability;
