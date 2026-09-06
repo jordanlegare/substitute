@@ -1,0 +1,156 @@
+name: Material catalog data acquisition
+
+on:
+  push:
+    branches:
+      - automation/material-catalog-data
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install acquisition dependency
+        run: python -m pip install 'duckdb>=1.1,<2'
+      - name: Acquire normalized COD mirror metadata
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import duckdb
+          import ald_materials as materials
+          from tools import build_material_catalog as builder
+
+          url = 'https://huggingface.co/datasets/LMucko/crystallography-open-database/resolve/main/cod_full.parquet'
+          con = duckdb.connect()
+          con.execute('INSTALL httpfs')
+          con.execute('LOAD httpfs')
+          rows = con.execute(
+              '''
+              SELECT file, formula, sg, mineral, chemname, commonname, doi, title, journal, year
+              FROM read_parquet(?)
+              WHERE formula IS NOT NULL AND file IS NOT NULL
+              ORDER BY file
+              LIMIT 75000
+              ''',
+              [url],
+          ).fetchall()
+
+          records = []
+          per_formula = {}
+          unique_eligible = set()
+          for row in rows:
+              file_id, formula, sg, mineral, chemname, commonname, doi, title, journal, year = row
+              cleaned = str(formula).strip().strip('-').strip()
+              if not cleaned:
+                  continue
+              try:
+                  reduced, elements = materials.reduce_formula(cleaned)
+              except ValueError:
+                  continue
+              if len(elements) < 2:
+                  continue
+              # The counted milestone is thin-film/materials focused. Generic molecular
+              # organics are excluded deterministically; carbon-containing inorganics
+              # (carbides, carbonates, cyanides, etc.) remain eligible when H is absent.
+              if 'C' in elements and 'H' in elements:
+                  continue
+              classes = builder.classify_material(elements, reduced, {})
+              if not classes:
+                  continue
+              count = per_formula.get(reduced, 0)
+              if count >= 2:
+                  continue
+              per_formula[reduced] = count + 1
+              unique_eligible.add(reduced)
+              name = next(
+                  (str(value).strip() for value in (mineral, chemname, commonname) if value and str(value).strip()),
+                  reduced,
+              )
+              record = {
+                  'source': 'cod',
+                  'source_id': str(file_id),
+                  'formula': cleaned,
+                  'name': name,
+              }
+              if sg and str(sg).strip():
+                  record['space_group'] = str(sg).strip()
+              if doi and str(doi).strip():
+                  record['doi'] = str(doi).strip()
+              reference_parts = [str(value).strip() for value in (title, journal, year) if value and str(value).strip()]
+              if reference_parts:
+                  record['reference'] = ' | '.join(reference_parts)
+              records.append(record)
+              if len(unique_eligible) >= 3500:
+                  break
+
+          if len(unique_eligible) < 1500:
+              raise SystemExit(f'insufficient eligible COD formulas: {len(unique_eligible)}')
+
+          source_root = Path('materials/sources')
+          source_root.mkdir(parents=True, exist_ok=True)
+          (source_root / 'cod-materials.json').write_bytes(
+              materials.canonical_json_bytes({'records': records})
+          )
+          (source_root / 'pubchem-identities.json').write_bytes(
+              materials.canonical_json_bytes({'records': []})
+          )
+          Path('materials/source-manifest.json').parent.mkdir(parents=True, exist_ok=True)
+          Path('materials/source-manifest.json').write_bytes(
+              materials.canonical_json_bytes({
+                  'retrieved_at': '2026-09-06T00:00:00Z',
+                  'source_metadata': {
+                      'cod': {
+                          'primary_database': 'Crystallography Open Database',
+                          'transport_mirror': 'LMucko/crystallography-open-database',
+                          'mirror_snapshot_date': '2026-07-06',
+                          'license': 'CC0-1.0',
+                          'mirror_parquet': url,
+                      },
+                      'pubchem': {
+                          'status': 'optional-enrichment-not-run-in-acquisition-pass'
+                      },
+                  },
+                  'selection_policy_version': 'materials-1000-v1',
+              })
+          )
+          print(json.dumps({
+              'queried_rows': len(rows),
+              'normalized_records': len(records),
+              'unique_eligible_formulas': len(unique_eligible),
+          }, sort_keys=True))
+          PY
+      - name: Build exact 1000-material catalog
+        run: python tools/build_material_catalog.py --target-count 1000
+      - name: Verify acquisition invariants
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('materials/catalog.json').read_text())
+          counted = [x for x in payload['entries'] if x['counted']]
+          assert payload['counted_non_elemental_reduced_formula_count'] == 1000
+          assert len(counted) == 1000
+          assert len({x['reduced_formula'] for x in counted}) == 1000
+          assert all(len(x['elements']) >= 2 for x in counted)
+          assert all(x['provenance'] for x in counted)
+          assert all(not ('C' in x['elements'] and 'H' in x['elements']) for x in counted)
+          print('verified exactly 1000 unique provenance-backed inorganic/material formulas')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: material-catalog-data
+          path: |
+            materials/sources/cod-materials.json
+            materials/sources/pubchem-identities.json
+            materials/source-manifest.json
+            materials/catalog.json
+            materials/build-audit.json
+          retention-days: 7
