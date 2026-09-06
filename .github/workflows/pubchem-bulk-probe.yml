@@ -1,0 +1,36 @@
+name: PubChem bulk mirror probe
+
+on:
+  push:
+    branches:
+      - automation/material-catalog-finalize
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe PubChem Extras and RDF bulk listings
+        run: |
+          set -euo pipefail
+          echo '=== Compound/Extras candidates ==='
+          curl -fsSL https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/ \
+            | grep -Eo 'href="[^"]+"' \
+            | cut -d'"' -f2 \
+            | grep -Ei 'CID-(IUPAC|InChI|InChI-Key|Title|SMILES|Formula|Molecular|Mass)' \
+            | sort || true
+          echo '=== RDF molecular-formula candidates ==='
+          curl -fsSL https://ftp.ncbi.nlm.nih.gov/pubchem/RDF/compound/general/ \
+            | grep -Eo 'href="[^"]+"' \
+            | cut -d'"' -f2 \
+            | grep -Ei 'molecular.*formula|formula' \
+            | sort || true
+          echo '=== RDF descriptor formula candidates ==='
+          curl -fsSL https://ftp.ncbi.nlm.nih.gov/pubchem/RDF/descriptor/compound/ \
+            | grep -Eo 'href="[^"]+"' \
+            | cut -d'"' -f2 \
+            | grep -Ei 'MolecularFormula' \
+            | sort || true
