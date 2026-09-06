@@ -25,6 +25,7 @@ jobs:
             tests/test_recipe_expansion.py \
             tests/test_compound_catalog.py \
             tests/test_chemistry_catalog.py \
+            tests/test_chemistry_cli.py \
             -q
       - name: Audit canonical recipe evidence
         run: python tools/audit_recipe_evidence.py
