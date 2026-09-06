@@ -87,60 +87,14 @@ def test_catalog_search_and_resolution_are_deterministic(tmp_path: Path):
 
 def _builder_fixture_records():
     return [
-        {
-            "source": "cod",
-            "source_id": "9000001",
-            "formula": "HfO2",
-            "name": "hafnium dioxide",
-            "space_group": "P21/c",
-        },
-        {
-            "source": "cod",
-            "source_id": "9000002",
-            "formula": "HfO2",
-            "name": "hafnium oxide",
-            "space_group": "P42/nmc",
-        },
-        {
-            "source": "cod",
-            "source_id": "9000003",
-            "formula": "Al2O3",
-            "name": "aluminum oxide",
-            "space_group": "R-3c",
-        },
-        {
-            "source": "cod",
-            "source_id": "9000004",
-            "formula": "ZnS",
-            "name": "zinc sulfide",
-            "space_group": "F-43m",
-        },
-        {
-            "source": "cod",
-            "source_id": "9000005",
-            "formula": "TiN",
-            "name": "titanium nitride",
-            "space_group": "Fm-3m",
-        },
-        {
-            "source": "cod",
-            "source_id": "9000006",
-            "formula": "Fe",
-            "name": "iron",
-            "space_group": "Im-3m",
-        },
-        {
-            "source": "cod",
-            "source_id": "9000007",
-            "formula": "CoSx",
-            "name": "cobalt sulfide",
-        },
-        {
-            "source": "",
-            "source_id": "",
-            "formula": "SiO2",
-            "name": "silicon dioxide",
-        },
+        {"source": "cod", "source_id": "9000001", "formula": "HfO2", "name": "hafnium dioxide", "space_group": "P21/c"},
+        {"source": "cod", "source_id": "9000002", "formula": "HfO2", "name": "hafnium oxide", "space_group": "P42/nmc"},
+        {"source": "cod", "source_id": "9000003", "formula": "Al2O3", "name": "aluminum oxide", "space_group": "R-3c"},
+        {"source": "cod", "source_id": "9000004", "formula": "ZnS", "name": "zinc sulfide", "space_group": "F-43m"},
+        {"source": "cod", "source_id": "9000005", "formula": "TiN", "name": "titanium nitride", "space_group": "Fm-3m"},
+        {"source": "cod", "source_id": "9000006", "formula": "Fe", "name": "iron", "space_group": "Im-3m"},
+        {"source": "cod", "source_id": "9000007", "formula": "CoSx", "name": "cobalt sulfide"},
+        {"source": "", "source_id": "", "formula": "SiO2", "name": "silicon dioxide"},
     ]
 
 
@@ -148,13 +102,9 @@ def test_builder_merges_duplicate_formulas_excludes_invalids_and_selects_exact_t
     from tools import build_material_catalog as builder
 
     catalog, manifest, audit = builder.build_material_artifacts(
-        _builder_fixture_records(),
-        [],
-        [],
-        target_count=4,
+        _builder_fixture_records(), [], [], target_count=4,
         manifest_template={"retrieved_at": "2026-09-05T00:00:00Z"},
     )
-
     counted = [entry for entry in catalog["entries"] if entry["counted"]]
     assert catalog["catalog_schema"] == "ald-material-catalog/1"
     assert catalog["counted_non_elemental_reduced_formula_count"] == 4
@@ -174,24 +124,10 @@ def test_builder_merges_duplicate_formulas_excludes_invalids_and_selects_exact_t
 def test_builder_is_byte_deterministic_for_same_inputs():
     from tools import build_material_catalog as builder
 
-    args = (
-        _builder_fixture_records(),
-        [],
-        [],
-    )
-    first = builder.build_material_artifacts(
-        *args,
-        target_count=4,
-        manifest_template={"retrieved_at": "2026-09-05T00:00:00Z"},
-    )
-    second = builder.build_material_artifacts(
-        *args,
-        target_count=4,
-        manifest_template={"retrieved_at": "2026-09-05T00:00:00Z"},
-    )
-    assert [materials.canonical_json_bytes(value) for value in first] == [
-        materials.canonical_json_bytes(value) for value in second
-    ]
+    args = (_builder_fixture_records(), [], [])
+    first = builder.build_material_artifacts(*args, target_count=4, manifest_template={"retrieved_at": "2026-09-05T00:00:00Z"})
+    second = builder.build_material_artifacts(*args, target_count=4, manifest_template={"retrieved_at": "2026-09-05T00:00:00Z"})
+    assert [materials.canonical_json_bytes(value) for value in first] == [materials.canonical_json_bytes(value) for value in second]
 
 
 def test_builder_rejects_target_larger_than_eligible_pool():
@@ -199,12 +135,70 @@ def test_builder_rejects_target_larger_than_eligible_pool():
 
     with pytest.raises(ValueError, match="eligible"):
         builder.build_material_artifacts(
-            _builder_fixture_records(),
-            [],
-            [],
-            target_count=5,
+            _builder_fixture_records(), [], [], target_count=5,
             manifest_template={"retrieved_at": "2026-09-05T00:00:00Z"},
         )
+
+
+def test_refresh_normalizes_cod_identity_fields_and_drops_operational_metadata():
+    from tools import refresh_material_sources as refresh
+
+    row = {
+        "file": "1524571",
+        "formula": "Hf O2",
+        "mineral": "hafnia",
+        "sg": "P 21/c",
+        "doi": "10.1000/example",
+        "reference": "Example structure paper",
+        "tags": ["dielectric"],
+        "process_temperature": 250,
+        "pulse_time": 0.5,
+    }
+    normalized = refresh.normalize_cod_row(row)
+    assert normalized == {
+        "source": "cod",
+        "source_id": "1524571",
+        "formula": "Hf O2",
+        "name": "hafnia",
+        "space_group": "P 21/c",
+        "doi": "10.1000/example",
+        "reference": "Example structure paper",
+        "material_classes": ["dielectric"],
+    }
+    assert "process_temperature" not in normalized
+    assert "pulse_time" not in normalized
+
+
+def test_refresh_normalizes_pubchem_identity_fields_only():
+    from tools import refresh_material_sources as refresh
+
+    payload = {"PropertyTable": {"Properties": [{
+        "CID": 23985,
+        "MolecularFormula": "HfO2",
+        "IUPACName": "hafnium(4+) dioxide",
+        "Title": "Hafnium dioxide",
+        "InChI": "InChI=1S/Hf.2O",
+        "InChIKey": "TESTKEY",
+        "MolecularWeight": "210.49",
+    }]}}
+    normalized = refresh.normalize_pubchem_payload("HfO2", payload)
+    assert normalized == {
+        "reduced_formula": "HfO2",
+        "cid": "23985",
+        "molecular_formula": "HfO2",
+        "iupac_name": "hafnium(4+) dioxide",
+        "title": "Hafnium dioxide",
+        "inchi": "InChI=1S/Hf.2O",
+        "inchikey": "TESTKEY",
+    }
+    assert "MolecularWeight" not in normalized
+
+
+def test_refresh_rejects_cod_rows_without_identity_anchor():
+    from tools import refresh_material_sources as refresh
+
+    assert refresh.normalize_cod_row({"formula": "HfO2"}) is None
+    assert refresh.normalize_cod_row({"file": "123"}) is None
 
 
 def test_pyproject_packages_material_module():
