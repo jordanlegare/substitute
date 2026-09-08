@@ -81,6 +81,46 @@ python tools/build_recipe_combinations.py build --max-components 3 --output buil
 
 ## Export any order and run it
 
+To export **all 397,811 canonical combinations** to the repository's recipe
+folder, run:
+
+```bash
+python tools/build_recipe_combinations.py export-all
+```
+
+Files go to
+`recipes/combinations/generated/<N>-components/<hash-prefix>/combination-<id>.json`.
+This folder holds full runnable simulator recipes and is separate from the
+compound evidence catalog, so bulk exports cannot be mistaken for new evidence.
+The destination is relative to the repository, regardless of the working directory.
+
+To export **all 48,534,764 component orders** instead:
+
+```bash
+python tools/build_recipe_combinations.py export-all --all-orders
+```
+
+This creates millions of individual files and requires substantially more disk
+space and time. Preview the count without creating files:
+
+```bash
+python tools/build_recipe_combinations.py export-all --all-orders --dry-run
+```
+
+For a smaller export or a different recipe root:
+
+```bash
+python tools/build_recipe_combinations.py export-all --max-components 2 --output build/recipe-pairs
+```
+
+Each recipe is validated and compiled before it is written. Progress is printed
+every 1,000 recipes. Interrupted exports can be resumed by running the same
+command: byte-identical files are skipped, and different existing content causes
+an error unless `--overwrite` is supplied. Files are replaced atomically, so an
+interruption does not leave a truncated recipe. Run only one exporter per output
+directory at a time. The final JSON reports `total`, `written`, and `skipped`;
+for dry runs, only `total` is populated. Generated files are ignored by Git.
+
 Use IDs from the manifest, in the desired component order:
 
 ```bash

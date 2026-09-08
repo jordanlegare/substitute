@@ -12,6 +12,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 import gzip
 import hashlib
+from itertools import permutations
 import json
 import math
 from pathlib import Path
@@ -26,6 +27,7 @@ import ald_core as core
 from tools.build_compound_catalog import build_compound_catalog, canonical_catalog_bytes
 
 DEFAULT_OUTPUT = ROOT / 'recipes' / 'combinations'
+DEFAULT_EXPORT = DEFAULT_OUTPUT / 'generated'
 NOTICE = (
     'Components inherit catalog-established chemistry recognition only; references '
     'have not been independently audited for every precursor route. The combined '
@@ -209,6 +211,51 @@ def check_catalog(output, seeds, max_components=6):
     return expected
 
 
+def export_all(output, seeds, max_components=6, *, all_orders=False,
+               dry_run=False, overwrite=False, progress=None):
+    """Stream validated recipes to sharded folders; identical files resume safely.
+
+    Keep generated recipes outside the compound evidence catalog. One canonical
+    component order is the default; factorial expansion is explicitly opt-in.
+    """
+    output = Path(output)
+    counts = {'total': 0, 'written': 0, 'skipped': 0}
+    for indices in iter_combinations(seeds, max_components):
+        if dry_run:
+            counts['total'] += math.factorial(len(indices)) if all_orders else 1
+            continue
+        orders = permutations(indices) if all_orders else (indices,)
+        for order in orders:
+            raw = compose_recipe([seeds[i] for i in order])
+            payload = canonical(raw)
+            recipe_id = raw['recipe_id']
+            # Hash prefix keeps even the largest order expansion out of a
+            # single giant directory. Stable IDs make restarts idempotent.
+            shard = recipe_id.removeprefix('combination-')[:2]
+            path = output / f'{len(order)}-components' / shard / f'{recipe_id}.json'
+            counts['total'] += 1
+            if path.exists() and path.read_bytes() == payload:
+                counts['skipped'] += 1
+            else:
+                if path.exists() and not overwrite:
+                    raise ValueError(f'{path}: existing content differs; use --overwrite to replace it')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = None
+                try:
+                    with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.export-',
+                                                     suffix='.tmp', delete=False) as stream:
+                        temporary = Path(stream.name)
+                        stream.write(payload)
+                    temporary.replace(path)
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
+                counts['written'] += 1
+            if progress is not None and counts['total'] % 1000 == 0:
+                progress(dict(counts))
+    return counts
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -219,10 +266,27 @@ def main(argv=None):
     export = sub.add_parser('export', help='Export named components in the exact supplied order')
     export.add_argument('components', nargs='+', help='Recipe IDs from manifest.json')
     export.add_argument('--output', type=Path, required=True)
+    bulk = sub.add_parser('export-all', help='Export every combination into recipe folders')
+    bulk.add_argument('--output', type=Path, default=DEFAULT_EXPORT,
+                      help='Recipe root (default: recipes/combinations/generated)')
+    bulk.add_argument('--max-components', type=int, choices=range(2, 7), default=6)
+    bulk.add_argument('--all-orders', action='store_true',
+                      help='Export all component permutations, not just canonical orders')
+    bulk.add_argument('--dry-run', action='store_true', help='Count exports without writing files')
+    bulk.add_argument('--overwrite', action='store_true',
+                      help='Replace differing existing files; identical files always skip')
     args = parser.parse_args(argv)
     try:
         seeds = load_seeds()
-        if args.command == 'export':
+        if args.command == 'export-all':
+            def report(counts):
+                print(f'Processed {counts["total"]}: {counts["written"]} written, '
+                      f'{counts["skipped"]} unchanged', file=sys.stderr, flush=True)
+            counts = export_all(args.output, seeds, args.max_components,
+                                all_orders=args.all_orders, dry_run=args.dry_run,
+                                overwrite=args.overwrite, progress=report)
+            print(json.dumps(counts, sort_keys=True))
+        elif args.command == 'export':
             by_id = {seed.recipe_id: seed for seed in seeds}
             missing = set(args.components) - by_id.keys()
             if missing:

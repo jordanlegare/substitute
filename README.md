@@ -33,6 +33,7 @@ For a fixed canonical recipe, controller implementation, and random seed, verifi
 | Browse the 8,000-material identity catalog | `ald-master materials search ...` |
 | Build/check exhaustive recipe-motif combinations | `python tools/build_recipe_combinations.py build` / `check` |
 | Export an ordered combination as a simulator recipe | `python tools/build_recipe_combinations.py export COMPONENT_ID ... --output PATH` |
+| Export all combinations to recipe folders | `python tools/build_recipe_combinations.py export-all` |
 
 The product-MP4 path **adds** a product visualization mode; it does not replace the existing QR/HLS mode.
 
