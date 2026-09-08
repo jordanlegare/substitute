@@ -31,8 +31,20 @@ For a fixed canonical recipe, controller implementation, and random seed, verifi
 | Audit precursor/material compatibility evidence | `ald-master compatibility-report` |
 | Rank evidence-supported 2–6 precursor candidates | `ald-master candidates ...` |
 | Browse the 8,000-material identity catalog | `ald-master materials search ...` |
+| Build/check exhaustive recipe-motif combinations | `python tools/build_recipe_combinations.py build` / `check` |
+| Export an ordered combination as a simulator recipe | `python tools/build_recipe_combinations.py export COMPONENT_ID ... --output PATH` |
 
 The product-MP4 path **adds** a product visualization mode; it does not replace the existing QR/HLS mode.
+
+## Recipe combination catalog
+
+For executable combinations, the separate [recipe combination index](recipes/combinations/README.md)
+contains **397,811 component sets representing 48,534,764 ordered sequences**
+from the 59 catalog-established component recipes. It exhaustively covers
+two to six distinct components within the simulator's six-precursor and
+twelve-exposure limits. Every order can be exported and simulated; the combined
+stacks remain explicitly unvalidated simulation candidates. Component references
+are preserved, and generated combinations do not become compatibility evidence.
 
 ## 8,000-material identity catalog
 
