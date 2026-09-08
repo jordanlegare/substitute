@@ -121,3 +121,49 @@ def test_checked_in_exhaustive_catalog_is_current():
     result = combos.check_catalog(combos.DEFAULT_OUTPUT, combos.load_seeds())
     assert result['combination_count'] == 397811
     assert result['ordered_sequence_count'] == 48534764
+
+
+def test_bulk_export_writes_all_valid_recipes_and_resumes(tmp_path):
+    seeds = combos.load_seeds()[:3]
+    result = combos.export_all(tmp_path, seeds)
+    assert result == {'total': 4, 'written': 4, 'skipped': 0}
+    files = sorted(tmp_path.glob('*-components/*/combination-*.json'))
+    assert len(files) == 4
+    for path in files:
+        raw = json.loads(path.read_text())
+        count = len(raw['metadata']['component_recipes'])
+        assert path.parent.parent.name == f'{count}-components'
+        assert path.stem == raw['recipe_id']
+        core.compile_recipe(core.validate_recipe(raw))
+    assert combos.export_all(tmp_path, seeds) == {'total': 4, 'written': 0, 'skipped': 4}
+
+
+def test_bulk_export_all_orders_and_dry_run(tmp_path):
+    seeds = combos.load_seeds()[:3]
+    destination = tmp_path / 'recipes'
+    result = combos.export_all(destination, seeds, all_orders=True, dry_run=True)
+    assert result == {'total': 12, 'written': 0, 'skipped': 0}
+    assert not destination.exists()
+    assert combos.export_all(destination, seeds, all_orders=True)['written'] == 12
+    assert len(list(destination.rglob('combination-*.json'))) == 12
+    assert combos.export_all(tmp_path / 'pairs', seeds, max_components=2)['total'] == 3
+
+
+def test_bulk_export_does_not_silently_replace_changed_files(tmp_path):
+    seeds = combos.load_seeds()[:2]
+    combos.export_all(tmp_path, seeds)
+    path = next(tmp_path.rglob('combination-*.json'))
+    path.write_text('user modified this file')
+    with pytest.raises(ValueError, match='overwrite'):
+        combos.export_all(tmp_path, seeds)
+    assert path.read_text() == 'user modified this file'
+    assert combos.export_all(tmp_path, seeds, overwrite=True)['written'] == 1
+    core.validate_recipe(json.loads(path.read_text()))
+
+
+def test_bulk_export_cli_dry_run_uses_repository_recipe_folder(capsys):
+    assert combos.DEFAULT_EXPORT == combos.ROOT / 'recipes/combinations/generated'
+    assert combos.main(['export-all', '--max-components', '2', '--dry-run']) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output['total'] == 1711
+    assert output['written'] == 0
