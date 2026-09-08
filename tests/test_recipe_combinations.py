@@ -127,13 +127,13 @@ def test_bulk_export_writes_all_valid_recipes_and_resumes(tmp_path):
     seeds = combos.load_seeds()[:3]
     result = combos.export_all(tmp_path, seeds)
     assert result == {'total': 4, 'written': 4, 'skipped': 0}
-    files = sorted(tmp_path.glob('*-components/*/combination-*.json'))
+    files = sorted(tmp_path.glob('*-components/*/*.json'))
     assert len(files) == 4
     for path in files:
         raw = json.loads(path.read_text())
         count = len(raw['metadata']['component_recipes'])
         assert path.parent.parent.name == f'{count}-components'
-        assert path.stem == raw['recipe_id']
+        assert path.name == combos.recipe_filename(raw)
         core.compile_recipe(core.validate_recipe(raw))
     assert combos.export_all(tmp_path, seeds) == {'total': 4, 'written': 0, 'skipped': 4}
 
@@ -145,14 +145,14 @@ def test_bulk_export_all_orders_and_dry_run(tmp_path):
     assert result == {'total': 12, 'written': 0, 'skipped': 0}
     assert not destination.exists()
     assert combos.export_all(destination, seeds, all_orders=True)['written'] == 12
-    assert len(list(destination.rglob('combination-*.json'))) == 12
+    assert len(list(destination.rglob('*.json'))) == 12
     assert combos.export_all(tmp_path / 'pairs', seeds, max_components=2)['total'] == 3
 
 
 def test_bulk_export_does_not_silently_replace_changed_files(tmp_path):
     seeds = combos.load_seeds()[:2]
     combos.export_all(tmp_path, seeds)
-    path = next(tmp_path.rglob('combination-*.json'))
+    path = next(tmp_path.rglob('*.json'))
     path.write_text('user modified this file')
     with pytest.raises(ValueError, match='overwrite'):
         combos.export_all(tmp_path, seeds)
@@ -167,3 +167,49 @@ def test_bulk_export_cli_dry_run_uses_repository_recipe_folder(capsys):
     output = json.loads(capsys.readouterr().out)
     assert output['total'] == 1711
     assert output['written'] == 0
+
+
+def test_generated_filename_identifies_target_chemicals_and_order():
+    seeds = combos.load_seeds()
+    selected = [next(s for s in seeds if s.recipe_id.endswith(suffix)) for suffix in (
+        'al2o3_tma_water-001', 'tio2_ticl4_water-001', 'zno_dez_water-001')]
+    raw = combos.compose_recipe(selected)
+    name = combos.recipe_filename(raw)
+    assert name.startswith('Al2O3-TiO2-ZnO--aluminum-oxide-')
+    assert 'zinc-oxide' in name
+    assert name.endswith(raw['recipe_id'].removeprefix('combination-') + '.json')
+    assert combos.recipe_filename(combos.compose_recipe(selected[::-1])).startswith('ZnO-TiO2-Al2O3--')
+
+
+def test_generated_filename_is_portable_and_bounded():
+    raw = combos.compose_recipe(combos.load_seeds()[:2])
+    raw['metadata']['target_formula'] = 'Al:ZnO/SiO2'
+    raw['metadata']['target_material'] = '../' + 'oxide:*?<>|\\' * 100
+    name = combos.recipe_filename(raw)
+    assert name.startswith('Al-ZnO-SiO2--')
+    assert len(name.encode('ascii')) <= 240
+    assert not any(c in name for c in '/\\:*?<>|')
+
+
+def test_generated_filename_keeps_distinct_routes_unique():
+    seeds = combos.load_seeds()
+    water = next(s for s in seeds if s.recipe_id.endswith('al2o3_tma_water-001'))
+    ozone = next(s for s in seeds if s.recipe_id.endswith('al2o3_tma_ozone-001'))
+    zinc = next(s for s in seeds if s.recipe_id.endswith('zno_dez_water-001'))
+    a = combos.recipe_filename(combos.compose_recipe([water, zinc]))
+    b = combos.recipe_filename(combos.compose_recipe([ozone, zinc]))
+    assert a.startswith('Al2O3-ZnO--') and b.startswith('Al2O3-ZnO--')
+    assert a != b
+
+
+def test_bulk_export_renames_identical_legacy_files_on_resume(tmp_path):
+    seeds = combos.load_seeds()[:2]
+    combos.export_all(tmp_path, seeds)
+    path = next(tmp_path.rglob('*.json'))
+    raw = json.loads(path.read_text())
+    legacy = path.with_name(raw['recipe_id'] + '.json')
+    path.rename(legacy)
+    assert combos.export_all(tmp_path, seeds) == {'total': 1, 'written': 0, 'skipped': 1}
+    assert path.exists()
+    assert not legacy.exists()
+    assert len(list(tmp_path.rglob('*.json'))) == 1

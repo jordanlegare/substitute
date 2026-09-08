@@ -16,6 +16,7 @@ from itertools import permutations
 import json
 import math
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -211,6 +212,19 @@ def check_catalog(output, seeds, max_components=6):
     return expected
 
 
+def recipe_filename(raw):
+    """Name the target stack without claiming it forms a new single compound."""
+    def slug(value):
+        return re.sub(r'[^A-Za-z0-9]+', '-', value).strip('-')
+
+    formula = slug(raw['metadata']['target_formula'])[:80].rstrip('-') or 'target'
+    name = slug(raw['metadata']['target_material']).lower() or 'material'
+    suffix = raw['recipe_id'].removeprefix('combination-')
+    # ASCII and a 240-byte basename also accommodate long multicomponent names.
+    name = name[:240 - len(formula) - len(suffix) - len('----.json')].rstrip('-')
+    return f'{formula}--{name}--{suffix}.json'
+
+
 def export_all(output, seeds, max_components=6, *, all_orders=False,
                dry_run=False, overwrite=False, progress=None):
     """Stream validated recipes to sharded folders; identical files resume safely.
@@ -232,7 +246,13 @@ def export_all(output, seeds, max_components=6, *, all_orders=False,
             # Hash prefix keeps even the largest order expansion out of a
             # single giant directory. Stable IDs make restarts idempotent.
             shard = recipe_id.removeprefix('combination-')[:2]
-            path = output / f'{len(order)}-components' / shard / f'{recipe_id}.json'
+            directory = output / f'{len(order)}-components' / shard
+            path = directory / recipe_filename(raw)
+            legacy_path = directory / f'{recipe_id}.json'
+            # Upgrade unchanged exports from the previous naming scheme on
+            # resume. Never rename or delete an edited legacy file.
+            if not path.exists() and legacy_path.is_file() and legacy_path.read_bytes() == payload:
+                legacy_path.replace(path)
             counts['total'] += 1
             if path.exists() and path.read_bytes() == payload:
                 counts['skipped'] += 1
