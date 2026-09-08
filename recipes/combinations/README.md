@@ -89,7 +89,13 @@ python tools/build_recipe_combinations.py export-all
 ```
 
 Files go to
-`recipes/combinations/generated/<N>-components/<hash-prefix>/combination-<id>.json`.
+`recipes/combinations/generated/<N>-components/<hash-prefix>/<formulas>--<chemical-names>--<id>.json`.
+For example, an oxide pair is named
+`Al2O3-ZnO--aluminum-oxide-zinc-oxide--<id>.json`.
+Both the formulas and chemical names follow component order. The ID distinguishes
+different precursor routes to the same targets. These names identify the target
+stack, not a newly proven single compound. Long names are shortened to keep the
+filename within 240 ASCII bytes; the unique ID is retained.
 This folder holds full runnable simulator recipes and is separate from the
 compound evidence catalog, so bulk exports cannot be mistaken for new evidence.
 The destination is relative to the repository, regardless of the working directory.
@@ -120,6 +126,10 @@ an error unless `--overwrite` is supplied. Files are replaced atomically, so an
 interruption does not leave a truncated recipe. Run only one exporter per output
 directory at a time. The final JSON reports `total`, `written`, and `skipped`;
 for dry runs, only `total` is populated. Generated files are ignored by Git.
+Unchanged exports with the old `combination-<id>.json` filenames are automatically
+renamed when you rerun the exporter and counted as skipped (their contents are
+unchanged). Edited legacy files are left intact. Explicit filenames supplied to
+the single-recipe `export --output` command remain user-controlled.
 
 Use IDs from the manifest, in the desired component order:
 
